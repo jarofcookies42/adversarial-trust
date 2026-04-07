@@ -1,0 +1,13 @@
+config_name,task,generator,finder,adversary,referee,issues_found,issues_confirmed,adversary_kills,kill_rate,programmatic_findings,code_quality_verdict
+config1_anthropic_finder_google_adv,task_a_sql,google/gemini-3-flash-preview,anthropic/claude-sonnet-4-6,google/gemini-3-flash-preview,anthropic/claude-sonnet-4-6,0,0,0,0.0,0,concerning
+config1_anthropic_finder_google_adv,task_b_ssrf,google/gemini-3-flash-preview,anthropic/claude-sonnet-4-6,google/gemini-3-flash-preview,anthropic/claude-sonnet-4-6,0,0,0,0.0,0,mostly_secure
+config2_google_finder_anthropic_adv,task_a_sql,google/gemini-3-flash-preview,google/gemini-3-flash-preview,anthropic/claude-sonnet-4-6,anthropic/claude-sonnet-4-6,9,2,5,0.556,0,mostly_secure
+config2_google_finder_anthropic_adv,task_b_ssrf,google/gemini-3-flash-preview,google/gemini-3-flash-preview,anthropic/claude-sonnet-4-6,anthropic/claude-sonnet-4-6,8,4,1,0.125,0,vulnerable
+config3_opus_finder_google_pro_adv,task_a_sql,google/gemini-3-flash-preview,anthropic/claude-opus-4-6,google/gemini-3.1-pro-preview,google/gemini-3.1-pro-preview,12,12,0,0.0,0,critical
+config3_opus_finder_google_pro_adv,task_b_ssrf,google/gemini-3-flash-preview,anthropic/claude-opus-4-6,google/gemini-3.1-pro-preview,google/gemini-3.1-pro-preview,11,11,0,0.0,0,vulnerable
+config4_opus_finder_sonnet_adv,task_a_sql,google/gemini-3-flash-preview,anthropic/claude-opus-4-6,anthropic/claude-sonnet-4-6,google/gemini-3.1-pro-preview,12,5,7,0.583,0,critical
+config4_opus_finder_sonnet_adv,task_b_ssrf,google/gemini-3-flash-preview,anthropic/claude-opus-4-6,anthropic/claude-sonnet-4-6,google/gemini-3.1-pro-preview,13,6,6,0.462,0,vulnerable
+config5_opus_finder_haiku_adv,task_a_sql,google/gemini-3-flash-preview,anthropic/claude-opus-4-6,anthropic/claude-haiku-4-5-20251001,google/gemini-3.1-pro-preview,11,7,4,0.364,0,critical
+config5_opus_finder_haiku_adv,task_b_ssrf,google/gemini-3-flash-preview,anthropic/claude-opus-4-6,anthropic/claude-haiku-4-5-20251001,google/gemini-3.1-pro-preview,13,9,4,0.308,0,critical
+config6_google_heavy_opus_referee,task_a_sql,anthropic/claude-sonnet-4-6,google/gemini-3.1-pro-preview,google/gemini-3-flash-preview,anthropic/claude-opus-4-6,0,0,0,0.0,0,concerning
+config6_google_heavy_opus_referee,task_b_ssrf,anthropic/claude-sonnet-4-6,google/gemini-3.1-pro-preview,google/gemini-3-flash-preview,anthropic/claude-opus-4-6,4,4,0,0.0,0,concerning
