@@ -135,13 +135,13 @@ OLLAMA_BASE_URL=http://localhost:11434  # Ollama endpoint
 
 ```bash
 # Single test
-python -m runners.single_run --domain secret_extraction --target gemini-2.5-flash --rounds 10
+uv run python -m runners.single_run --domain secret_extraction --target gemini-2.5-flash --rounds 10
 
 # Single code review
-python -m runners.single_run --domain code_security --generator gemini-2.5-flash --task "implement a user auth system"
+uv run python -m runners.single_run --domain code_security --generator gemini-2.5-flash --task "implement a user auth system"
 
 # Batch
-python -m runners.batch_runner --domain code_security --config configs/code_review_batch.yaml
+uv run python -m runners.batch_runner --domain code_security --config configs/code_review_batch.yaml
 ```
 
 ## What To Build First
