@@ -86,7 +86,7 @@ adversarial-trust/
 
 ## Tech Stack
 
-- **Python 3.12+**
+- **Python 3.13**
 - **LangGraph** for multi-agent orchestration
 - **LangChain** for LLM provider abstraction
 - **LangSmith** for tracing and evaluation (optional but recommended)

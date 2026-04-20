@@ -43,23 +43,25 @@ This finding — that the defense process itself creates detectable signals — 
 ## Quick Start
 
 ```bash
+# Install uv first: `brew install uv` (or see https://astral.sh/uv)
+
 # Clone and install
 git clone <repo-url>
 cd adversarial-trust
-pip install -r requirements.txt
+uv sync
 
 # Set up environment
 cp .env.example .env
 # Edit .env with your API keys
 
 # Run a code security review
-python -m runners.single_run \
+uv run python -m runners.single_run \
   --domain code_security \
   --generator gemini-2.5-flash \
   --task "implement a JWT authentication system in Python"
 
 # Run a secret extraction test
-python -m runners.single_run \
+uv run python -m runners.single_run \
   --domain secret_extraction \
   --target gemini-2.5-flash \
   --rounds 10
