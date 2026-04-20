@@ -1,0 +1,100 @@
+# Frozen snapshot of the Python 3.14 environment used for the
+# April 7, 2026 MAAT experiment batch.
+#
+# Extracted from venv/lib/python3.14/site-packages/*.dist-info/METADATA
+# on 2026-04-19, just before the venv was deleted as part of the
+# migration to uv-managed Python 3.13.
+#
+# This file is a reference artifact, not an active requirements file.
+# To reproduce the April 7 environment exactly (on Python 3.14):
+#   uv venv --python 3.14 .venv-april7
+#   uv pip install -r archive/requirements-april7-snapshot.txt
+#
+# Total packages: 86
+
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.5
+aiosignal==1.4.0
+annotated-types==0.7.0
+anthropic==0.89.0
+anyio==4.13.0
+attrs==26.1.0
+certifi==2026.2.25
+cffi==2.0.0
+charset-normalizer==3.4.7
+coverage==7.13.5
+cryptography==46.0.6
+dataclasses-json==0.6.7
+distro==1.9.0
+docstring-parser==0.17.0
+filetype==1.2.0
+frozenlist==1.8.0
+google-auth==2.49.1
+google-genai==1.70.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+httpx-sse==0.4.3
+idna==3.11
+iniconfig==2.3.0
+jiter==0.13.0
+jsonpatch==1.33
+jsonpointer==3.1.1
+langchain==1.2.15
+langchain-anthropic==1.4.0
+langchain-classic==1.0.3
+langchain-community==0.4.1
+langchain-core==1.2.27
+langchain-google-genai==4.2.1
+langchain-ollama==1.1.0
+langchain-openai==1.1.12
+langchain-text-splitters==1.1.1
+langgraph==1.1.6
+langgraph-checkpoint==4.0.1
+langgraph-prebuilt==1.0.9
+langgraph-sdk==0.3.12
+langsmith==0.7.26
+markdown-it-py==4.0.0
+marshmallow==3.26.2
+mdurl==0.1.2
+multidict==6.7.1
+mypy-extensions==1.1.0
+numpy==2.4.4
+ollama==0.6.1
+openai==2.30.0
+orjson==3.11.8
+ormsgpack==1.12.2
+packaging==26.0
+pip==26.0
+pluggy==1.6.0
+propcache==0.4.1
+pyasn1==0.6.3
+pyasn1-modules==0.4.2
+pycparser==3.0
+pydantic==2.12.5
+pydantic-core==2.41.5
+pydantic-settings==2.13.1
+pygments==2.20.0
+pytest==9.0.3
+pytest-asyncio==1.3.0
+pytest-cov==7.1.0
+python-dotenv==1.2.2
+pyyaml==6.0.3
+regex==2026.4.4
+requests==2.33.1
+requests-toolbelt==1.0.0
+rich==14.3.3
+sniffio==1.3.1
+sqlalchemy==2.0.49
+tenacity==9.1.4
+tiktoken==0.12.0
+tqdm==4.67.3
+typing-extensions==4.15.0
+typing-inspect==0.9.0
+typing-inspection==0.4.2
+urllib3==2.6.3
+uuid-utils==0.14.1
+websockets==16.0
+xxhash==3.6.0
+yarl==1.23.0
+zstandard==0.25.0
