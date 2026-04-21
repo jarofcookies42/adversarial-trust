@@ -100,9 +100,9 @@ adversarial-trust/
 
 1. **Domain-agnostic core, domain-specific implementations.** The `maat/` package provides the shared orchestration, state management, and evaluation infrastructure. Each domain in `domains/` implements the pattern with its own prompts, agents, and scoring.
 
-2. **Dual-layer evaluation everywhere.** Every domain must have both an LLM judge AND programmatic detection. The pilot study proved LLM judges miss obvious things (Day 1: full leak scored 6/10 PARTIAL by the judge). Programmatic detection catches what the LLM judge misses; the LLM judge catches subtle/semantic things programmatic checks can't.
+2. **Multi-layer evaluation:** an LLM referee plus deterministic layers (regex detector, bandit static analysis) that escalate critical findings missed by the referee. The deterministic layers run alongside the LLM, not before or after — they don't gate the verdict, they augment it.
 
-3. **Competing incentives for code review.** The code_security domain uses the Adversarial Review pattern: Finder is rewarded for finding issues (+1 per issue), Adversary is rewarded for disproving issues (+1 per kill), Referee is rewarded for accuracy. Competing incentives cancel out sycophancy.
+3. **Role-conditioning for code review.** The code_security domain runs four agents in sequence: a generator writes code, a finder is prompted to flag issues, an adversary is prompted to challenge weak findings, a referee is prompted to arbitrate. There's no tallied scoring — the competing-objective framing lives entirely in the system prompts. Sycophancy partly cancels because the agents are pointed at different tasks, and the LLM referee delivers the final verdict (with deterministic-layer escalation as a safety net for critical findings it misses).
 
 4. **All results are structured JSON.** Every test run produces a JSON file with full conversation history, judge evaluations, programmatic detection results, metadata (model, temperature, timestamp, domain), and a summary. This enables automated analysis.
 

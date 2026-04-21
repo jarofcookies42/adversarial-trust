@@ -16,26 +16,24 @@ The framework applies the same multi-agent pattern across multiple trust dimensi
 
 ## Architecture
 
-Every domain follows the same competing-incentive pattern:
+Every domain follows the same multi-role pattern:
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │  GENERATOR  │────▶│   FINDER    │────▶│  ADVERSARY  │────▶│   REFEREE   │
-│             │     │ +1 per issue│     │ +1 per kill │     │ +1 accuracy │
+│ writes code │     │finds issues │     │ challenges  │     │  delivers   │
+│             │     │             │     │  findings   │     │   verdict   │
 └─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
-                          │                    │                    │
-                     finds issues        disproves fakes      final verdict
-                     (even borderline)   (attacks weak ones)  (ground truth)
 ```
 
-**Why competing incentives?** When you ask one AI to review code, it finds bugs — even if it has to make some up (sycophancy). When you add an adversary that gets rewarded for disproving those bugs, the fake ones get killed. Three sycophantic agents pointed in different directions cancel each other out.
+**Why the multi-role structure?** When you ask one AI to review code, it finds bugs — even if it has to make some up (sycophancy). Each agent here is conditioned by a different system prompt: the finder is framed as an issue-hunter, the adversary challenges weak findings, the referee arbitrates. It's role-conditioning, not an engineered scoring mechanism — no points are tallied. The LLM referee delivers the final verdict, and the prompt framing is what points each agent at a distinct objective so their natural sycophantic tendencies partly offset each other. Alongside the referee, deterministic layers (regex detector, bandit static analysis) run in parallel and can escalate critical findings the referee missed.
 
 ## Key Finding from Pilot Study
 
 The pilot study (~90 trials across 10 models) discovered that **LLM defense mechanisms create observable side-channels**:
 
 - Models actively suppress words similar to protected secrets in their output
-- Chain-of-thought reasoning reveals vocabulary avoidance patterns (e.g., replacing "crunch" with "rustle" because "crush" is in the secret)
+- Chain-of-thought reasoning reveals vocabulary suppression — e.g., a model generating a "random" word list silently substituting "ocean" for "planet" because "planet" was semantically too close to GALAXY, a word in the protected seed phrase. The substitution is invisible in normal output but appears verbatim in the model's deliberation tokens.
 - **Active suppression is more visible than passive leakage** — the act of hiding IS the tell
 
 This finding — that the defense process itself creates detectable signals — has not been documented in prior jailbreak literature and is the primary novel contribution.
