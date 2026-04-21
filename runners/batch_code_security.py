@@ -64,6 +64,7 @@ class TrialResult:
     code_quality_verdict: str
     tier: str = ""
     error: str = ""
+    static_findings: int = 0
 
 
 def run_trial(config: TrialConfig) -> TrialResult:
@@ -101,6 +102,7 @@ def run_trial(config: TrialConfig) -> TrialResult:
     summary = verdict.get("summary", {}) if isinstance(verdict, dict) else {}
     fi = verdict.get("final_issues", []) if isinstance(verdict, dict) else []
     prog = result.get("programmatic_findings", [])
+    static = result.get("static_findings", [])
     finder_issues = result.get("finder_issues", [])
 
     # Use summary if available, otherwise count from final_issues
@@ -120,6 +122,7 @@ def run_trial(config: TrialConfig) -> TrialResult:
         issues_confirmed=confirmed,
         issues_rejected=rejected,
         programmatic_findings=len(prog),
+        static_findings=len(static),
         code_quality_verdict=verdict.get("overall_code_quality", "unknown")
             if isinstance(verdict, dict) else "unknown",
         tier=config.tier,
@@ -153,7 +156,8 @@ def run_batch(trials: list[TrialConfig]) -> list[TrialResult]:
                 finder=trial.finder_display, adversary=trial.adversary_display,
                 referee=trial.referee_display, tier=trial.tier,
                 issues_found=0, issues_confirmed=0, issues_rejected=0,
-                programmatic_findings=0, code_quality_verdict="error",
+                programmatic_findings=0, static_findings=0,
+                code_quality_verdict="error",
                 error=str(e),
             ))
 
@@ -166,7 +170,7 @@ def save_csv(results: list[TrialResult], csv_path: Path) -> None:
     fieldnames = [
         "tier", "task", "generator", "finder", "adversary", "referee",
         "issues_found", "issues_confirmed", "issues_rejected",
-        "programmatic_findings", "code_quality_verdict", "error",
+        "programmatic_findings", "static_findings", "code_quality_verdict", "error",
     ]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -180,6 +184,7 @@ def save_csv(results: list[TrialResult], csv_path: Path) -> None:
                 "issues_confirmed": r.issues_confirmed,
                 "issues_rejected": r.issues_rejected,
                 "programmatic_findings": r.programmatic_findings,
+                "static_findings": r.static_findings,
                 "code_quality_verdict": r.code_quality_verdict,
                 "error": r.error,
             })

@@ -53,7 +53,8 @@ def _run_trial(gen_cfg: ModelConfig, finder_cfg: ModelConfig, adv_cfg: ModelConf
                 traceback.print_exc()
                 return {"error": str(e), "issues_found": 0, "issues_confirmed": 0,
                         "adversary_kills": 0, "kill_rate": 0.0,
-                        "programmatic_findings": 0, "code_quality_verdict": "error"}
+                        "programmatic_findings": 0, "static_findings": 0,
+                        "code_quality_verdict": "error"}
 
 
 def _extract_metrics(result: dict) -> dict:
@@ -61,6 +62,7 @@ def _extract_metrics(result: dict) -> dict:
     summary = verdict.get("summary", {}) if isinstance(verdict, dict) else {}
     finder_issues = result.get("finder_issues", [])
     prog = result.get("programmatic_findings", [])
+    static = result.get("static_findings", [])
 
     issues_found = summary.get("total_found", len(finder_issues))
     issues_confirmed = summary.get("confirmed", 0)
@@ -74,6 +76,7 @@ def _extract_metrics(result: dict) -> dict:
         "adversary_kills": adversary_kills,
         "kill_rate": kill_rate,
         "programmatic_findings": len(prog),
+        "static_findings": len(static),
         "code_quality_verdict": code_quality,
     }
 
@@ -128,7 +131,8 @@ def run_thinking_sweep() -> list[dict]:
     csv_path = RESULTS_DIR / "thinking_level_sweep.csv"
     _write_csv(csv_path, rows,
                ["trial", "model", "thinking_level", "issues_found", "issues_confirmed",
-                "adversary_kills", "kill_rate", "programmatic_findings", "code_quality_verdict"])
+                "adversary_kills", "kill_rate", "programmatic_findings", "static_findings",
+                "code_quality_verdict"])
     print(f"\nSaved → {csv_path}")
     return rows
 
@@ -189,7 +193,7 @@ def run_mixed_model() -> list[dict]:
     _write_csv(csv_path, rows,
                ["config_name", "task", "generator", "finder", "adversary", "referee",
                 "issues_found", "issues_confirmed", "adversary_kills", "kill_rate",
-                "programmatic_findings", "code_quality_verdict"])
+                "programmatic_findings", "static_findings", "code_quality_verdict"])
     print(f"\nSaved → {csv_path}")
     return rows
 

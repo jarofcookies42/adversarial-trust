@@ -21,12 +21,127 @@ from maat.state import CodeSecurityState
 from maat.utils import console, log_round, make_log_path, make_result_path, save_result
 
 from domains.code_security.detector import run_detector, severity_score
+from domains.code_security.static_scanner import run_static_scanner
 from domains.code_security.prompts import (
     ADVERSARY_SYSTEM,
     FINDER_SYSTEM,
     GENERATOR_SYSTEM,
     REFEREE_SYSTEM,
 )
+
+
+# ── Verdict escalation helper ──────────────────────────────────────────────
+#
+# Deterministic layers (regex detector, bandit static scanner) can flag
+# critical issues with certainty. When the probabilistic LLM referee misses
+# one, we escalate: tag the finding as confirmed, raise overall quality to
+# at least "vulnerable", record per-layer counts in the summary.
+#
+# This helper handles N layers uniformly so adding a future scanner
+# (semgrep, CodeQL, etc.) is additive — no new branches needed.
+
+_QUALITY_ORDER = ["secure", "mostly_secure", "concerning",
+                  "vulnerable", "critical", "unknown"]
+
+
+def _rank_quality(q: str) -> int:
+    try:
+        return _QUALITY_ORDER.index(q)
+    except ValueError:
+        return -1
+
+
+def _referee_covers(finding: dict, final_issues: list[dict]) -> bool:
+    """Heuristic: does the referee's final_issues list already acknowledge
+    this deterministic finding? Checks category, rule_id, and match text
+    against the referee's natural-language explanations."""
+    needle_cat = (finding.get("category") or "").lower()
+    needle_match = (finding.get("match") or "").lower()
+    needle_rule = (finding.get("rule_id") or "").lower()
+    for fi in final_issues:
+        if not isinstance(fi, dict):
+            continue
+        hay = " ".join(
+            str(fi.get(k, "")) for k in
+            ("explanation", "description", "type", "category", "final_severity")
+        ).lower()
+        if needle_cat and needle_cat in hay:
+            return True
+        if needle_rule and needle_rule in hay:
+            return True
+        if needle_match and len(needle_match) > 6 and needle_match in hay:
+            return True
+    return False
+
+
+# Per-layer source tags, used both as the `source` field on appended issues
+# and as the key in the summary escalation counts. Kept in one place so the
+# strings don't drift.
+_SOURCE_TO_SUMMARY_KEY = {
+    "deterministic_detector": "detector_escalations",
+    "static_scanner":          "static_escalations",
+}
+
+
+def _apply_deterministic_escalation(
+    verdict: dict,
+    layers: list[tuple[str, list[dict]]],
+    log_path,
+) -> None:
+    """Append critical findings the referee missed to verdict['final_issues'],
+    escalate overall_code_quality if any were added, record per-layer counts.
+
+    Mutates `verdict` in place. `layers` is a list of (source_tag, findings)
+    tuples where source_tag is a key in _SOURCE_TO_SUMMARY_KEY.
+    """
+    final_issues = verdict.setdefault("final_issues", [])
+    per_layer_missed: dict[str, list[dict]] = {}
+    total = 0
+
+    for source_tag, findings in layers:
+        missed = [
+            f for f in findings
+            if f.get("severity") == "critical" and not _referee_covers(f, final_issues)
+        ]
+        per_layer_missed[source_tag] = missed
+        total += len(missed)
+
+    if total == 0:
+        return
+
+    for source_tag, missed in per_layer_missed.items():
+        for f in missed:
+            final_issues.append({
+                "issue_id": f"{source_tag}:{f.get('rule_id', '?')}:L{f.get('line', '?')}",
+                "final_verdict": "confirmed",
+                "final_severity": f.get("severity", "critical"),
+                "explanation": (
+                    f"Added by {source_tag} (not confirmed by referee): "
+                    f"{f.get('description', '')}. "
+                    f"Match: {(f.get('match') or '')[:120]}"
+                ),
+                "source": source_tag,
+            })
+
+    current_q = verdict.get("overall_code_quality", "unknown")
+    if _rank_quality(current_q) < _rank_quality("vulnerable"):
+        verdict["overall_code_quality"] = "vulnerable"
+
+    summary = verdict.setdefault("summary", {})
+    for source_tag, missed in per_layer_missed.items():
+        key = _SOURCE_TO_SUMMARY_KEY.get(source_tag, f"{source_tag}_escalations")
+        summary[key] = len(missed)
+
+    try:
+        breakdown = ", ".join(
+            f"{tag}={len(m)}" for tag, m in per_layer_missed.items() if m
+        )
+        log_round(log_path, "escalation",
+                  f"Deterministic layers escalated {total} critical finding(s) "
+                  f"missed by referee ({breakdown}); "
+                  f"quality -> {verdict['overall_code_quality']}")
+    except Exception:
+        pass
 
 # Retry config for rate-limited APIs
 MAX_RETRIES = 3
@@ -319,12 +434,35 @@ def build_code_security_graph(
                 else "concerning"
             )
 
-        # Run programmatic detector (dual-layer evaluation)
+        # ── Deterministic layers ──────────────────────────────────────────
+        # Two independent scanners. Kept as separate fields in the result JSON
+        # so per-layer analysis stays possible — do NOT merge these lists.
+        #   - programmatic_findings: regex detector (line-local textual patterns)
+        #   - static_findings:        bandit (AST-level structural patterns)
+
         prog_findings = run_detector(state["generated_code"])
         prog_score = severity_score(prog_findings)
         if prog_findings:
             log_round(log_path, "detector",
-                      f"Programmatic scan: {len(prog_findings)} findings, severity score {prog_score}")
+                      f"Regex scan: {len(prog_findings)} findings, severity score {prog_score}")
+
+        static_findings = run_static_scanner(state["generated_code"])
+        static_score = severity_score(static_findings)
+        if static_findings:
+            log_round(log_path, "static",
+                      f"Static scan: {len(static_findings)} findings, severity score {static_score}")
+
+        # Generalized escalation across all deterministic layers — critical
+        # findings the referee missed get appended to final_issues and lift
+        # overall_code_quality to at least "vulnerable".
+        _apply_deterministic_escalation(
+            verdict,
+            [
+                ("deterministic_detector", prog_findings),
+                ("static_scanner",          static_findings),
+            ],
+            log_path,
+        )
 
         # Save full result
         result = {
@@ -341,6 +479,8 @@ def build_code_security_graph(
             "referee_verdict": verdict,
             "programmatic_findings": prog_findings,
             "programmatic_severity_score": prog_score,
+            "static_findings": static_findings,
+            "static_severity_score": static_score,
         }
         result_path = make_result_path("code_security", generator_config.display_name)
         save_result(result_path, result)
@@ -348,6 +488,7 @@ def build_code_security_graph(
         return {
             "referee_verdict": verdict,
             "programmatic_findings": prog_findings,
+            "static_findings": static_findings,
             "conversation_history": [{"role": "referee", "content": raw}],
         }
 

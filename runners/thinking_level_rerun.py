@@ -63,6 +63,7 @@ class Result:
     programmatic_findings: int
     code_quality_verdict: str
     error: str = ""
+    static_findings: int = 0
 
 
 def make_config(model_key: str, temperature: float, thinking_level: str | None = None) -> ModelConfig:
@@ -113,6 +114,7 @@ def run_trial(trial: Trial) -> Result:
     fi = verdict.get("final_issues", []) if isinstance(verdict, dict) else []
     finder_issues = result.get("finder_issues", [])
     prog = result.get("programmatic_findings", [])
+    static = result.get("static_findings", [])
 
     found = summary.get("total_found") or len(finder_issues)
     confirmed = summary.get("confirmed") or sum(
@@ -132,6 +134,7 @@ def run_trial(trial: Trial) -> Result:
         issues_rejected=rejected,
         kill_rate=round(kill, 1),
         programmatic_findings=len(prog),
+        static_findings=len(static),
         code_quality_verdict=quality,
     )
 
@@ -175,7 +178,7 @@ def main() -> None:
                 tier=t.tier, model=t.model_key, finder_temp=t.finder_temp,
                 thinking_level=t.thinking_level or "N/A",
                 issues_found=0, issues_confirmed=0, issues_rejected=0,
-                kill_rate=0.0, programmatic_findings=0,
+                kill_rate=0.0, programmatic_findings=0, static_findings=0,
                 code_quality_verdict="error", error=str(e),
             ))
 
@@ -183,7 +186,8 @@ def main() -> None:
     csv_path = RESULTS_DIR / "thinking_level_rerun.csv"
     fieldnames = ["tier", "model", "finder_temp", "thinking_level",
                   "issues_found", "issues_confirmed", "issues_rejected",
-                  "kill_rate", "programmatic_findings", "code_quality_verdict", "error"]
+                  "kill_rate", "programmatic_findings", "static_findings",
+                  "code_quality_verdict", "error"]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
@@ -194,6 +198,7 @@ def main() -> None:
                 "issues_found": r.issues_found, "issues_confirmed": r.issues_confirmed,
                 "issues_rejected": r.issues_rejected, "kill_rate": r.kill_rate,
                 "programmatic_findings": r.programmatic_findings,
+                "static_findings": r.static_findings,
                 "code_quality_verdict": r.code_quality_verdict, "error": r.error,
             })
     console.print(f"\n[green]CSV saved:[/green] {csv_path}")

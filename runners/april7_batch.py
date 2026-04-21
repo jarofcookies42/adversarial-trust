@@ -71,6 +71,7 @@ def _extract_metrics(graph_result: dict) -> dict:
     finder_issues = graph_result.get("finder_issues", []) or []
     adversary_challenges = graph_result.get("adversary_challenges", []) or []
     prog = graph_result.get("programmatic_findings", []) or []
+    static = graph_result.get("static_findings", []) or []
 
     found = summary.get("total_found") or len(finder_issues)
     confirmed = summary.get("confirmed") or sum(
@@ -94,6 +95,7 @@ def _extract_metrics(graph_result: dict) -> dict:
         "adversary_kills": adversary_kills,
         "kill_rate": kill_rate,
         "programmatic_findings": len(prog),
+        "static_findings": len(static),
         "code_quality_verdict": quality,
     }
 
@@ -138,6 +140,7 @@ def _err_row(**kwargs) -> dict:
         "adversary_kills": 0,
         "kill_rate": 0.0,
         "programmatic_findings": 0,
+        "static_findings": 0,
         "code_quality_verdict": "error",
         **kwargs,
     }
@@ -215,7 +218,7 @@ def run_experiment_1() -> list[dict]:
     fieldnames = [
         "model", "thinking_level", "finder_temp",
         "issues_found", "issues_confirmed", "adversary_kills", "kill_rate",
-        "programmatic_findings", "code_quality_verdict", "error",
+        "programmatic_findings", "static_findings", "code_quality_verdict", "error",
     ]
     _write_csv(csv_path, results, fieldnames)
 
@@ -361,7 +364,7 @@ def run_experiment_2() -> list[dict]:
     fieldnames = [
         "config_name", "task", "generator", "finder", "adversary", "referee",
         "finder_temp", "issues_found", "issues_confirmed", "adversary_kills",
-        "kill_rate", "programmatic_findings", "code_quality_verdict", "error",
+        "kill_rate", "programmatic_findings", "static_findings", "code_quality_verdict", "error",
     ]
     _write_csv(csv_path, results, fieldnames)
 
@@ -438,7 +441,7 @@ def run_experiment_3() -> list[dict]:
     fieldnames = [
         "finder_temp", "issues_found", "issues_confirmed",
         "adversary_kills", "kill_rate", "programmatic_findings",
-        "code_quality_verdict", "error",
+        "static_findings", "code_quality_verdict", "error",
     ]
     _write_csv(csv_path, results, fieldnames)
 

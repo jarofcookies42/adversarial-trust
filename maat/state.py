@@ -37,4 +37,5 @@ class CodeSecurityState(BaseTestState, total=False):
     adversary_challenges: list[dict]   # Adversary's rebuttals [{issue_id, challenge, verdict}]
     surviving_issues: list[dict]       # Issues that survived adversary challenge
     referee_verdict: dict              # Final evaluation {real_issues, false_positives, score}
-    programmatic_findings: list[dict]  # Static analysis / pattern matching results
+    programmatic_findings: list[dict]  # Regex detector results (layer 1)
+    static_findings: list[dict]        # Bandit AST static scanner results (layer 2)
