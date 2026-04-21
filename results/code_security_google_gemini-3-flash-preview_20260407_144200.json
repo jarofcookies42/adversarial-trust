@@ -1,0 +1,243 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3-flash-preview",
+  "finder": "google/gemini-3-flash-preview",
+  "adversary": "google/gemini-3-flash-preview",
+  "referee": "google/gemini-3-flash-preview",
+  "generated_code": "import os\nimport logging\nimport psycopg2\nfrom psycopg2 import pool, extras, Error\nfrom typing import List, Dict, Any, Optional, Union\nfrom contextlib import contextmanager\n\n# Configure logging\nlogging.basicConfig(\n    level=logging.INFO,\n    format='%(asctime)s - %(levelname)s - %(message)s'\n)\nlogger = logging.getLogger(__name__)\n\nclass DatabaseError(Exception):\n    \"\"\"Custom exception for database operations.\"\"\"\n    pass\n\nclass PostgresClient:\n    \"\"\"\n    A production-ready PostgreSQL client using a connection pool.\n    \"\"\"\n\n    def __init__(self):\n        # Configuration should ideally come from environment variables\n        self.host = os.getenv(\"DB_HOST\", \"localhost\")\n        self.database = os.getenv(\"DB_NAME\", \"postgres\")\n        self.user = os.getenv(\"DB_USER\", \"postgres\")\n        self.password = os.getenv(\"DB_PASSWORD\", \"password\")\n        self.port = os.getenv(\"DB_PORT\", \"5432\")\n        self.min_conn = 1\n        self.max_conn = 10\n        self._pool = None\n\n        self._initialize_pool()\n\n    def _initialize_pool(self):\n        \"\"\"Initializes the connection pool.\"\"\"\n        try:\n            self._pool = psycopg2.pool.SimpleConnectionPool(\n                self.min_conn,\n                self.max_conn,\n                user=self.user,\n                password=self.password,\n                host=self.host,\n                port=self.port,\n                database=self.database,\n                # Set a statement timeout to prevent long-running user queries (e.g., 30s)\n                options=\"-c statement_timeout=30000\"\n            )\n            logger.info(\"Connection pool initialized successfully.\")\n        except Error as e:\n            logger.error(f\"Error creating connection pool: {e}\")\n            raise DatabaseError(\"Could not connect to the database.\")\n\n    @contextmanager\n    def get_connection(self):\n        \"\"\"Context manager to safely acquire and release connections from the pool.\"\"\"\n        conn = None\n        try:\n            conn = self._pool.getconn()\n            yield conn\n        except Error as e:\n            logger.error(f\"Database connection error: {e}\")\n            raise DatabaseError(str(e))\n        finally:\n            if conn:\n                self._pool.putconn(conn)\n\n    def execute_query(\n        self, \n        sql: str, \n        params: Optional[Union[Dict, List, tuple]] = None, \n        fetch_results: bool = True\n    ) -> Optional[List[Dict[str, Any]]]:\n        \"\"\"\n        Executes a user-provided SQL query safely.\n        \n        :param sql: The SQL query string.\n        :param params: Parameters for the query (to prevent SQL injection).\n        :param fetch_results: Whether to fetch and return data (for SELECT).\n        :return: List of dictionaries representing rows, or None.\n        \"\"\"\n        # Basic input validation\n        if not sql or not isinstance(sql, str):\n            raise ValueError(\"SQL query must be a non-empty string.\")\n\n        # Use RealDictCursor to return results as dictionaries (column_name: value)\n        with self.get_connection() as conn:\n            with conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:\n                try:\n                    # Execute the query. \n                    # Note: 'params' should be used for dynamic values to prevent SQL Injection.\n                    # If the user provides the entire SQL string, the security responsibility\n                    # lies with the database user permissions (Role-Based Access Control).\n                    cursor.execute(sql, params)\n                    \n                    if fetch_results:\n                        # Check if the cursor has results to fetch (prevents error on DML)\n                        if cursor.description:\n                            results = cursor.fetchall()\n                            conn.commit()\n                            return [dict(row) for row in results]\n                    \n                    conn.commit()\n                    return None\n\n                except Error as e:\n                    conn.rollback()\n                    logger.error(f\"Query execution failed: {e}\\nQuery: {sql}\")\n                    raise DatabaseError(f\"Execution error: {e}\")\n\n    def close_pool(self):\n        \"\"\"Closes all connections in the pool.\"\"\"\n        if self._pool:\n            self._pool.closeall()\n            logger.info(\"Connection pool closed.\")\n\n# Example Usage\nif __name__ == \"__main__\":\n    db = None\n    try:\n        db = PostgresClient()\n\n        # 1. Example: Safe parameterized query (Recommended)\n        user_id = 1\n        safe_sql = \"SELECT * FROM users WHERE id = %s;\"\n        user_data = db.execute_query(safe_sql, (user_id,))\n        print(f\"User Data: {user_data}\")\n\n        # 2. Example: Running a raw user-provided query\n        # WARNING: Ensure the DB user has read-only permissions if exposing this to untrusted users.\n        user_query = \"SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';\"\n        tables = db.execute_query(user_query)\n        print(f\"Public Tables: {tables}\")\n\n    except Exception as e:\n        print(f\"Application Error: {e}\")\n    finally:\n        if db:\n            db.close_pool()",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "46",
+      "description": "The use of 'psycopg2.pool.SimpleConnectionPool' is not thread-safe. In a multi-threaded production environment (e.g., running under Gunicorn, uWSGI, or a multi-threaded web framework), this will lead to corrupted connection states, cross-talk between requests, and potential authentication bypasses or data leaks.",
+      "exploit": "In a multi-threaded application, one thread might pull a connection currently being used by another thread, leading to one user seeing another user's data or executing queries in another user's transaction context.",
+      "fix": "Replace 'SimpleConnectionPool' with 'psycopg2.pool.ThreadedConnectionPool'."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "31",
+      "description": "Hardcoded default credentials ('password' and 'postgres') are provided for environment variable fallbacks.",
+      "exploit": "If the environment variables are not set in a staging or dev-to-prod pipeline, the application will default to weak credentials, making it trivial for an attacker to brute-force or guess the database password.",
+      "fix": "Remove default values for DB_USER and DB_PASSWORD. Ensure the application raises an error if these required environment variables are missing."
+    },
+    {
+      "id": 3,
+      "severity": "high",
+      "type": "security",
+      "line": "119",
+      "description": "Information Disclosure via logging. The code logs the raw 'sql' string and the database error message 'e' upon failure. This can leak PII, internal schema details, or sensitive query parameters to log files.",
+      "exploit": "An attacker can trigger intentional database errors (e.g., providing a string where an int is expected) to force the application to log internal table structures or sensitive data included in the query string.",
+      "fix": "Log a generic error message and a unique correlation ID. Ensure sensitive data is scrubbed from logs. Do not log the raw SQL string if it might contain unsanitized data."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "120",
+      "description": "Information Disclosure via exception propagation. The 'DatabaseError' wraps and returns the raw psycopg2 error message to the caller.",
+      "exploit": "If these exceptions are caught by a web framework and displayed to the user, the attacker gains intelligence about the database version, table names, and constraint names, facilitating further SQL injection or exploitation.",
+      "fix": "Return a generic error message like 'Internal Database Error' to the caller and keep the specific error details in internal logs only."
+    },
+    {
+      "id": 5,
+      "severity": "medium",
+      "type": "security",
+      "line": "46",
+      "description": "Connection string does not enforce SSL/TLS. By default, psycopg2 might fallback to an unencrypted connection.",
+      "exploit": "An attacker performing a Man-in-the-Middle (MitM) attack on the network between the app and the DB can sniff database credentials and all data transferred in cleartext.",
+      "fix": "Append 'sslmode=verify-full' or 'sslmode=require' to the connection parameters and provide the necessary CA certificates."
+    },
+    {
+      "id": 6,
+      "severity": "medium",
+      "type": "logic",
+      "line": "66",
+      "description": "The 'get_connection' method catches 'psycopg2.Error', but pool-related errors (like 'PoolError' when the pool is exhausted) inherit from the base 'Exception' or 'psycopg2.pool.PoolError', not the database 'Error' class.",
+      "exploit": "If the connection pool is exhausted, the specific 'except Error' block will be bypassed, potentially leading to an unhandled exception that crashes the worker or leaks technical stack traces.",
+      "fix": "Catch 'psycopg2.pool.PoolError' specifically or use a broader exception catch for the pool acquisition logic."
+    },
+    {
+      "id": 7,
+      "severity": "medium",
+      "type": "security",
+      "line": "104",
+      "description": "The method 'execute_query' accepts a raw SQL string. While it supports 'params', it does not enforce their use, and the documentation comments suggest the client might be used for 'user-provided queries'.",
+      "exploit": "If developers use this client by concatenating strings instead of using the 'params' argument (e.g., f'SELECT * FROM users WHERE id={id}'), the application is vulnerable to SQL injection.",
+      "fix": "Implement a linting rule or a wrapper that prevents non-literal strings from being passed as the SQL argument, or strictly enforce that 'params' must be used for all dynamic input."
+    },
+    {
+      "id": 8,
+      "severity": "low",
+      "type": "performance",
+      "line": "112",
+      "description": "Transaction management: 'conn.commit()' is called for every query, including 'SELECT' statements.",
+      "exploit": "N/A",
+      "fix": "For read-only operations (SELECT), a commit is not strictly necessary unless you are managing specific transaction isolation levels. Consider using 'conn.set_session(readonly=True, autocommit=True)' for fetch operations to reduce overhead."
+    },
+    {
+      "id": 9,
+      "severity": "low",
+      "type": "logic",
+      "line": "28",
+      "description": "The client is initialized with 'min_conn=1' and 'max_conn=10'. This is a low 'max_conn' for production services, which could lead to bottlenecking or 'PoolError' under moderate load.",
+      "exploit": "An attacker could perform a low-volume Denial of Service by making 10 concurrent slow requests, exhausting the pool and preventing legitimate users from accessing the database.",
+      "fix": "Make pool sizes configurable via environment variables and increase the limit based on expected concurrency."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "downgraded",
+      "reasoning": "While SimpleConnectionPool is not thread-safe, this is only an issue if the client is instantiated globally in a multi-threaded server. In many modern deployments (e.g., Gunicorn/Uvicorn with 'uvloop' or 'gevent', or Celery workers), the execution model is process-based or asynchronous, where this code would function perfectly. Labeling this 'Critical' assumes a specific execution environment not mandated by the code.",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "killed",
+      "reasoning": "These are fallbacks for environment variables, standard for 'localhost' developer setup. In any legitimate production environment, 'DB_HOST' would be set to a remote address, rendering the 'password' default irrelevant as it wouldn't match the production DB. This is a developer convenience, not a vulnerability.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "downgraded",
+      "reasoning": "The code explicitly provides a 'params' argument for dynamic values. If used correctly, the 'sql' string logged contains only the prepared statement template (e.g., 'WHERE id = %s'), not PII. Logging the SQL template is standard for debugging. The claim that it logs sensitive query parameters is only true if the user ignores the provided 'params' feature.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "killed",
+      "reasoning": "A database client library MUST provide error details to the calling application. It is the responsibility of the Application Layer (the code calling this client) to handle exceptions and decide what to show the end user. Blaming the library for providing diagnostic data is a category error in software architecture.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "killed",
+      "reasoning": "SSL configuration in psycopg2 is typically handled via the connection string (passed through DB_HOST or DB_NAME env vars) or the environment ('PGSSLMODE'). Hardcoding 'sslmode=verify-full' would break connectivity for users with local DBs or internal VPCs that handle encryption at the network layer (e.g., AWS Aurora).",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 6,
+      "verdict": "valid",
+      "reasoning": "This is a legitimate technical catch. 'psycopg2.pool.PoolError' does not inherit from 'psycopg2.Error'. If the pool is exhausted, 'getconn()' raises an error that bypasses the 'except Error' block, potentially leading to an unhandled exception. However, it doesn't cause a 'leak', just a crash.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 7,
+      "verdict": "killed",
+      "reasoning": "The method provides 'params' specifically to prevent SQL injection. Expecting a low-level DB client to 'enforce' usage or prevent string concatenation is unrealistic; no standard DB driver (sqlite3, psycopg2, etc.) does this. The vulnerability would lie in the calling code, not this utility.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 8,
+      "verdict": "killed",
+      "reasoning": "In psycopg2, if autocommit is off (default), every SELECT starts a transaction. If you don't commit or rollback, the connection returns to the pool in an 'idle in transaction' state, which prevents VACUUM and causes DB bloat. Committing is a safe and necessary practice here to release the transaction.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 9,
+      "verdict": "killed",
+      "reasoning": "A default max_conn of 10 is a sensible default for a single-process worker. An attacker exhausting a connection pool is a generic DoS vector applicable to all DB-driven apps. Security is not improved by increasing this number; it is managed by proper infrastructure scaling and rate limiting.",
+      "revised_severity": "none"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "46",
+      "description": "The use of 'psycopg2.pool.SimpleConnectionPool' is not thread-safe. In a multi-threaded production environment (e.g., running under Gunicorn, uWSGI, or a multi-threaded web framework), this will lead to corrupted connection states, cross-talk between requests, and potential authentication bypasses or data leaks.",
+      "exploit": "In a multi-threaded application, one thread might pull a connection currently being used by another thread, leading to one user seeing another user's data or executing queries in another user's transaction context.",
+      "fix": "Replace 'SimpleConnectionPool' with 'psycopg2.pool.ThreadedConnectionPool'."
+    },
+    {
+      "id": 3,
+      "severity": "high",
+      "type": "security",
+      "line": "119",
+      "description": "Information Disclosure via logging. The code logs the raw 'sql' string and the database error message 'e' upon failure. This can leak PII, internal schema details, or sensitive query parameters to log files.",
+      "exploit": "An attacker can trigger intentional database errors (e.g., providing a string where an int is expected) to force the application to log internal table structures or sensitive data included in the query string.",
+      "fix": "Log a generic error message and a unique correlation ID. Ensure sensitive data is scrubbed from logs. Do not log the raw SQL string if it might contain unsanitized data."
+    },
+    {
+      "id": 6,
+      "severity": "medium",
+      "type": "logic",
+      "line": "66",
+      "description": "The 'get_connection' method catches 'psycopg2.Error', but pool-related errors (like 'PoolError' when the pool is exhausted) inherit from the base 'Exception' or 'psycopg2.pool.PoolError', not the database 'Error' class.",
+      "exploit": "If the connection pool is exhausted, the specific 'except Error' block will be bypassed, potentially leading to an unhandled exception that crashes the worker or leaks technical stack traces.",
+      "fix": "Catch 'psycopg2.pool.PoolError' specifically or use a broader exception catch for the pool acquisition logic."
+    }
+  ],
+  "referee_verdict": {
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "modified",
+        "final_severity": "high",
+        "explanation": "The Finder is correct that SimpleConnectionPool is not thread-safe. While the Adversary argues this depends on the execution model, a class explicitly documented as 'production-ready' should use ThreadedConnectionPool by default or provide a clear warning. In Python, many common deployment patterns (e.g., Gunicorn/uWSGI with thread workers) would result in race conditions, connection corruption, or data leakage between threads using this code."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "modified",
+        "final_severity": "low",
+        "explanation": "Hardcoded default credentials are a security anti-pattern (CWE-259). While the Adversary is correct that these are likely for local development, 'production-ready' code should fail fast if credentials are missing rather than falling back to 'password'. The severity is low because it requires a misconfiguration of the environment to be exploitable."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "modified",
+        "final_severity": "medium",
+        "explanation": "Logging the raw SQL string and the exception object 'e' is a significant information disclosure risk. Even with parameterized queries, the exception message 'e' from psycopg2 often contains the specific values that caused a constraint violation or type error. Logging these to standard output/files can leak PII or sensitive business logic."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "rejected",
+        "explanation": "The Adversary is correct. This is a utility library/client. It is the responsibility of the application layer that consumes this client to catch exceptions and sanitize error messages before displaying them to an end-user. A database client must provide detailed error information to the caller for proper programmatic handling."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "rejected",
+        "explanation": "SSL/TLS settings for psycopg2 are typically managed via the connection string or environment variables (PGSSLMODE). Hardcoding 'sslmode' in the client initialization reduces flexibility and can break connectivity in environments where SSL is terminated at the network/VPC level."
+      },
+      {
+        "issue_id": 6,
+        "final_verdict": "modified",
+        "final_severity": "low",
+        "explanation": "This is a valid logic bug. psycopg2.pool.PoolError (raised when the pool is exhausted) does not inherit from psycopg2.Error. Consequently, the 'except Error' block in get_connection will not catch pool exhaustion, leading to an unhandled exception. The severity is low as it leads to a crash rather than a direct security exploit."
+      },
+      {
+        "issue_id": 7,
+        "final_verdict": "rejected",
+        "explanation": "The method provides a 'params' argument to support parameterized queries. It is not the responsibility of a low-level database utility to enforce how the caller constructs the SQL string. The vulnerability would exist in the calling code, not this client implementation."
+      },
+      {
+        "issue_id": 8,
+        "final_verdict": "rejected",
+        "explanation": "The Adversary is correct. In psycopg2, transactions are started automatically. If a SELECT query is not committed or rolled back, the connection remains 'idle in transaction' when returned to the pool, which can lead to database performance issues and prevent VACUUM operations."
+      },
+      {
+        "issue_id": 9,
+        "final_verdict": "rejected",
+        "explanation": "A default max_conn of 10 is a standard and safe default for a single-process worker. Resource exhaustion is a general DoS risk that should be managed via infrastructure scaling and rate limiting, not by increasing default pool sizes in code."
+      }
+    ],
+    "summary": {
+      "total_found": 9,
+      "confirmed": 0,
+      "rejected": 5,
+      "modified": 4,
+      "finder_accuracy": 0.44,
+      "adversary_accuracy": 0.89
+    },
+    "overall_code_quality": "concerning"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

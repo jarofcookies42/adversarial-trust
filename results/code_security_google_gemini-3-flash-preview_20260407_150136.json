@@ -1,0 +1,289 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3-flash-preview",
+  "finder": "anthropic/claude-opus-4-6",
+  "adversary": "anthropic/claude-sonnet-4-6",
+  "referee": "google/gemini-3.1-pro-preview",
+  "generated_code": "import os\nimport logging\nimport sys\nfrom typing import List, Any, Optional, Tuple\nimport psycopg2\nfrom psycopg2 import Error, OperationalError, sql\nfrom contextlib import contextmanager\n\n# Configure logging\nlogging.basicConfig(\n    level=logging.INFO,\n    format=\"%(asctime)s - %(levelname)s - %(message)s\"\n)\nlogger = logging.getLogger(__name__)\n\nclass DatabaseManager:\n    \"\"\"Manages PostgreSQL database connections and query execution.\"\"\"\n\n    def __init__(self):\n        # Fetch credentials from environment variables for security\n        self.db_config = {\n            \"host\": os.getenv(\"DB_HOST\", \"localhost\"),\n            \"database\": os.getenv(\"DB_NAME\"),\n            \"user\": os.getenv(\"DB_USER\"),\n            \"password\": os.getenv(\"DB_PASSWORD\"),\n            \"port\": os.getenv(\"DB_PORT\", \"5432\"),\n            \"connect_timeout\": 10\n        }\n        \n        # Basic validation of required environment variables\n        missing = [k for k, v in self.db_config.items() if v is None]\n        if missing:\n            raise EnvironmentError(f\"Missing required environment variables: {', '.join(missing)}\")\n\n    @contextmanager\n    def get_connection(self):\n        \"\"\"Context manager for handling database connections safely.\"\"\"\n        conn = None\n        try:\n            conn = psycopg2.connect(**self.db_config)\n            yield conn\n        except OperationalError as e:\n            logger.error(f\"Database connection failed: {e}\")\n            raise\n        finally:\n            if conn:\n                conn.close()\n\n    def execute_query(self, query: str, params: Optional[Tuple] = None) -> List[Any]:\n        \"\"\"\n        Executes a SQL query and returns results.\n        \n        Args:\n            query: The SQL query string to execute.\n            params: Optional tuple of parameters for parameterized queries.\n            \n        Returns:\n            List of rows if the query returns data, otherwise an empty list.\n        \"\"\"\n        if not query or not isinstance(query, str):\n            raise ValueError(\"A valid SQL query string must be provided.\")\n\n        results = []\n        try:\n            with self.get_connection() as conn:\n                with conn.cursor() as cursor:\n                    # Execute the query\n                    # Note: Using parameters (params) is critical to prevent SQL injection\n                    # for dynamic values. However, the query structure itself is user-provided here.\n                    cursor.execute(query, params)\n                    \n                    # Check if the query returns rows (e.g., SELECT)\n                    if cursor.description:\n                        results = cursor.fetchall()\n                    \n                    # Commit changes for DML/DDL queries\n                    conn.commit()\n                    logger.info(\"Query executed successfully.\")\n                    \n        except Error as e:\n            logger.error(f\"SQL Execution Error: {e.pgerror}\")\n            # In production, you might want to re-raise or handle specific codes\n            raise\n        except Exception as e:\n            logger.error(f\"Unexpected error: {e}\")\n            raise\n\n        return results\n\ndef main():\n    \"\"\"\n    Entry point for the script. \n    Expects SQL query as a command-line argument or via interactive prompt.\n    \"\"\"\n    db_manager = DatabaseManager()\n\n    # Example usage: Read from CLI argument or stdin\n    if len(sys.argv) > 1:\n        user_query = \" \".join(sys.argv[1:])\n    else:\n        print(\"Enter your SQL query (terminate with semicolon and Enter):\")\n        user_query = sys.stdin.read().strip()\n\n    if not user_query:\n        logger.warning(\"No query provided. Exiting.\")\n        return\n\n    try:\n        # SECURITY WARNING: Running arbitrary user-provided SQL is dangerous.\n        # Ensure the DB user used by this script has restricted permissions (Least Privilege).\n        rows = db_manager.execute_query(user_query)\n        \n        if rows:\n            for row in rows:\n                print(row)\n        else:\n            print(\"Query executed successfully. No rows returned.\")\n            \n    except Exception as e:\n        # Detailed error already logged in the class\n        sys.exit(1)\n\nif __name__ == \"__main__\":\n    # Ensure environment variables are set before running:\n    # export DB_HOST='localhost'\n    # export DB_NAME='mydb'\n    # export DB_USER='myuser'\n    # export DB_PASSWORD='mypassword'\n    main()",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "68-69",
+      "description": "The `execute_query` method accepts a raw SQL query string directly from user input and passes it to `cursor.execute()`. While parameterized queries are supported via `params`, the `main()` function passes user-supplied SQL as the query structure itself, meaning arbitrary SQL (DROP TABLE, data exfiltration, privilege escalation) can be executed.",
+      "exploit": "An attacker runs: `python script.py \"DROP TABLE users; --\"` or `python script.py \"SELECT * FROM pg_shadow\"` to dump password hashes, drop tables, or perform any operation the DB user is authorized for.",
+      "fix": "Do not allow arbitrary SQL execution from untrusted input. Implement an allowlist of permitted query patterns, use an ORM, or restrict to read-only operations with a read-only database user. At minimum, enforce a read-only transaction with `SET TRANSACTION READ ONLY`."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "73",
+      "description": "`conn.commit()` is called unconditionally after every query, including destructive DML/DDL statements (INSERT, UPDATE, DELETE, DROP, ALTER). Combined with the arbitrary query execution, this ensures all destructive operations are persisted immediately with no rollback opportunity.",
+      "exploit": "Any destructive query supplied by the user is immediately committed. There's no confirmation step, dry-run mode, or transaction rollback on suspicious queries.",
+      "fix": "Separate read queries from write queries. For read queries, don't commit (or use autocommit/read-only mode). For write queries, implement authorization checks and confirmation before committing."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "security",
+      "line": "42-43",
+      "description": "Database connection error details (including potentially sensitive connection info like hostnames, ports, usernames) are logged via `logger.error(f\"Database connection failed: {e}\")`. The `OperationalError` exception can contain connection strings or credential fragments.",
+      "exploit": "If logs are accessible to unauthorized users (e.g., shared log files, log aggregation systems, stdout in container environments), connection details could be leaked.",
+      "fix": "Log a generic error message and log the detailed exception at DEBUG level only, or sanitize the exception message before logging."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "78",
+      "description": "`logger.error(f\"SQL Execution Error: {e.pgerror}\")` logs the PostgreSQL error message which can contain table names, column names, query fragments, and internal schema details. This is an information disclosure risk.",
+      "exploit": "An attacker who can trigger SQL errors and view logs can enumerate database schema, table structures, and column names through crafted malformed queries.",
+      "fix": "Log detailed SQL errors at DEBUG level only. Log a generic message at ERROR level. Never expose `pgerror` in user-facing output."
+    },
+    {
+      "id": 5,
+      "severity": "medium",
+      "type": "logic",
+      "line": "78",
+      "description": "`e.pgerror` can be `None` for certain `psycopg2.Error` subclasses (e.g., `InterfaceError`), which would log 'SQL Execution Error: None' — losing the actual error information.",
+      "exploit": "Not an exploit, but a debugging/reliability issue. Actual error details are silently lost.",
+      "fix": "Use `str(e)` or `e.pgerror or str(e)` to ensure the error message is always captured."
+    },
+    {
+      "id": 6,
+      "severity": "medium",
+      "type": "security",
+      "line": "30",
+      "description": "The validation for missing environment variables includes `connect_timeout` (which has no env var and defaults to integer 10, so it's never None) and `host`/`port` (which have defaults). Meanwhile, it doesn't specifically validate that `DB_NAME`, `DB_USER`, and `DB_PASSWORD` are set — it checks all keys including those with defaults, making the validation misleading. More critically, `connect_timeout` is an integer 10, not None, so it passes, but the check doesn't distinguish between required and optional config.",
+      "exploit": "If `DB_HOST` is unset, it defaults to 'localhost' and passes validation, which may silently connect to the wrong database in production environments.",
+      "fix": "Explicitly check only the required variables (`DB_NAME`, `DB_USER`, `DB_PASSWORD`) rather than iterating over the entire config dict."
+    },
+    {
+      "id": 7,
+      "severity": "low",
+      "type": "security",
+      "line": "22-28",
+      "description": "The `db_config` dictionary containing the database password is stored as an instance attribute and persists in memory for the lifetime of the `DatabaseManager` object. It could be exposed via introspection, debugging, or memory dumps.",
+      "exploit": "In a long-running process, memory inspection tools or crash dumps could reveal the database password from the object's attributes.",
+      "fix": "Fetch credentials only when needed (inside `get_connection`), or use a secrets manager that provides short-lived credentials. Clear sensitive values after use."
+    },
+    {
+      "id": 8,
+      "severity": "low",
+      "type": "logic",
+      "line": "39-44",
+      "description": "If `psycopg2.connect()` raises a non-`OperationalError` exception (e.g., `ProgrammingError` for invalid parameters), it won't be caught by the `except OperationalError` block and will propagate as an unhandled exception from the context manager without logging.",
+      "exploit": "Not directly exploitable, but unexpected exceptions during connection could crash the application without useful logging.",
+      "fix": "Add a broader `except psycopg2.Error` handler or a general `except Exception` handler with logging in the context manager."
+    },
+    {
+      "id": 9,
+      "severity": "low",
+      "type": "security",
+      "line": "25",
+      "description": "No SSL/TLS configuration for the database connection. By default, psycopg2 may connect without encryption, sending credentials and data in plaintext over the network.",
+      "exploit": "An attacker on the network path can sniff database credentials and query data via passive network monitoring.",
+      "fix": "Add `sslmode: 'require'` (or `'verify-full'`) to `db_config` and configure appropriate SSL certificates."
+    },
+    {
+      "id": 10,
+      "severity": "low",
+      "type": "logic",
+      "line": "70-73",
+      "description": "If the query is a SELECT that returns results but is followed by `conn.commit()`, this is unnecessary overhead. More importantly, if the connection encounters an error during `commit()` after a successful SELECT, results already fetched could be lost as the exception propagates.",
+      "exploit": "Not directly exploitable, but indicates poor transaction management.",
+      "fix": "Only call `conn.commit()` for non-SELECT queries (check `cursor.description` to determine if it was a read query), or use `conn.set_session(readonly=True, autocommit=True)` for read-only queries."
+    },
+    {
+      "id": 11,
+      "severity": "info",
+      "type": "security",
+      "line": "8-12",
+      "description": "Logging is configured at INFO level with output to stdout/stderr by default. In production, this could expose operational details. The logging configuration is also global (`basicConfig`), which could conflict with other modules.",
+      "exploit": "Not directly exploitable, but log output in shared environments could leak operational information.",
+      "fix": "Use a dedicated logger configuration, set appropriate log levels for production (WARNING or above), and direct logs to secure, access-controlled destinations."
+    },
+    {
+      "id": 12,
+      "severity": "info",
+      "type": "logic",
+      "line": "96-97",
+      "description": "When an exception occurs in `main()`, `sys.exit(1)` is called but the exception details are swallowed — only the log from the class is available. The user sees no indication of what went wrong on stderr/stdout.",
+      "exploit": "Not exploitable, but poor user experience and debugging difficulty.",
+      "fix": "Print a user-friendly error message (without sensitive details) before exiting, e.g., `print(f'Error: {e}', file=sys.stderr)`."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "valid",
+      "reasoning": "This is a genuine and critical vulnerability. The code explicitly accepts arbitrary SQL from command-line arguments or stdin and executes it directly. The comment in the code even acknowledges 'SECURITY WARNING: Running arbitrary user-provided SQL is dangerous.' An attacker can run any SQL the DB user is authorized for — DROP, SELECT from sensitive tables, pg_shadow dumps, etc. The parameterized query support is irrelevant here because the entire query structure is attacker-controlled. This is textbook arbitrary SQL execution.",
+      "revised_severity": "critical"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "downgraded",
+      "reasoning": "This is a real concern but it's not independently exploitable — it's a consequence of Issue 1. Without Issue 1 (arbitrary SQL), unconditional commit is just slightly sloppy transaction management. The finding is valid in that it amplifies Issue 1's impact (no rollback opportunity), but framing it as a standalone 'high' severity issue is inflated. It's a design flaw that worsens the primary vulnerability, not an independent high-severity issue. Downgrading to low since the real problem is Issue 1.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "downgraded",
+      "reasoning": "psycopg2 OperationalError messages typically contain connection failure reasons (e.g., 'could not connect to server', 'password authentication failed for user X'). They can reveal the username and host, which is mildly sensitive. However, this is logged server-side, not returned to the user. The exploit requires log access, which is a separate access control problem. This is a real but minor information disclosure concern — logs should be protected regardless. Downgrading to low.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "downgraded",
+      "reasoning": "Logging pgerror to server-side logs is a legitimate concern but requires an attacker to both trigger SQL errors AND have log access. If an attacker already has log access, there are bigger problems. The schema enumeration via error messages is a real attack technique, but it applies to user-facing error responses, not internal server logs. This is more of a defense-in-depth recommendation. The severity of 'medium' is slightly inflated for a server-side log entry.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "killed",
+      "reasoning": "This is a code quality/reliability observation, not a security issue. The reporter even admits 'Not an exploit.' Logging 'None' instead of a real error message is a minor debugging inconvenience. In practice, most psycopg2.Error instances that reach this handler will have pgerror set. This is a style/quality nit that doesn't belong in a security findings list.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 6,
+      "verdict": "killed",
+      "reasoning": "The analysis is factually wrong. The check iterates `self.db_config.items()` and looks for `v is None`. The `connect_timeout` value is integer 10, not None — so it correctly passes. `DB_HOST` defaults to 'localhost' and `DB_PORT` defaults to '5432', so they're never None either. Only `DB_NAME`, `DB_USER`, and `DB_PASSWORD` (which have no defaults) can be None — exactly the right ones to catch. The validation actually works correctly. The claim that 'it doesn't specifically validate DB_NAME, DB_USER, DB_PASSWORD' is false. This finding is based on a misreading of the code.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 7,
+      "verdict": "killed",
+      "reasoning": "Credentials stored in instance attributes are in memory for the object's lifetime — this is true of virtually every database connection pattern. The 'fix' of fetching credentials only in get_connection() would result in environment variable lookups on every connection, which is marginally better but still leaves credentials in memory (just for shorter duration). Memory dump attacks require local system access, at which point the attacker can read environment variables directly anyway. This is a theoretical concern with no practical improvement path that doesn't involve a hardware secrets module.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 8,
+      "verdict": "killed",
+      "reasoning": "The reporter claims non-OperationalError exceptions won't be caught and logged. But they will propagate up to execute_query's broad `except Exception as e` handler which does log them. The connection context manager not catching them is fine — the caller handles it. Additionally, psycopg2.ProgrammingError for invalid connection parameters is extremely rare in practice (you'd catch it during testing). This is a theoretical gap in a non-critical code path.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 9,
+      "verdict": "valid",
+      "reasoning": "No SSL configuration is a real security gap. psycopg2 defaults to 'prefer' SSL mode, which will use SSL if available but silently fall back to plaintext if not. In cloud or multi-tier environments, database credentials and query results traveling in plaintext over the network is a genuine risk. This is a real finding, though the severity depends heavily on deployment context (localhost vs. networked DB).",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 10,
+      "verdict": "killed",
+      "reasoning": "The claim that 'results already fetched could be lost as the exception propagates' is wrong — fetchall() has already populated the results list before commit() is called. If commit() fails after a SELECT, the results variable is already populated and the exception would propagate past the return statement, but the data was fetched successfully. The unnecessary commit() on SELECT is a minor inefficiency, not a logic error or security issue. Killing this as a non-issue dressed up as a finding.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 11,
+      "verdict": "killed",
+      "reasoning": "Global basicConfig affecting other modules is a legitimate Python logging concern, but this is a standalone script (the __main__ guard confirms it). The 'operational details' exposed at INFO level are just 'Query executed successfully' — not sensitive. This is a style preference for library code, not a security issue for a script. Killing as info-level noise.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 12,
+      "verdict": "killed",
+      "reasoning": "Swallowing exception details in the CLI's except block is a UX/debugging issue, not a security issue. The reporter even says 'Not exploitable.' Including this in a security findings list is padding. The detailed error is already logged by the class methods. A user seeing no output on failure is annoying, not dangerous.",
+      "revised_severity": "none"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "68-69",
+      "description": "The `execute_query` method accepts a raw SQL query string directly from user input and passes it to `cursor.execute()`. While parameterized queries are supported via `params`, the `main()` function passes user-supplied SQL as the query structure itself, meaning arbitrary SQL (DROP TABLE, data exfiltration, privilege escalation) can be executed.",
+      "exploit": "An attacker runs: `python script.py \"DROP TABLE users; --\"` or `python script.py \"SELECT * FROM pg_shadow\"` to dump password hashes, drop tables, or perform any operation the DB user is authorized for.",
+      "fix": "Do not allow arbitrary SQL execution from untrusted input. Implement an allowlist of permitted query patterns, use an ORM, or restrict to read-only operations with a read-only database user. At minimum, enforce a read-only transaction with `SET TRANSACTION READ ONLY`."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "73",
+      "description": "`conn.commit()` is called unconditionally after every query, including destructive DML/DDL statements (INSERT, UPDATE, DELETE, DROP, ALTER). Combined with the arbitrary query execution, this ensures all destructive operations are persisted immediately with no rollback opportunity.",
+      "exploit": "Any destructive query supplied by the user is immediately committed. There's no confirmation step, dry-run mode, or transaction rollback on suspicious queries.",
+      "fix": "Separate read queries from write queries. For read queries, don't commit (or use autocommit/read-only mode). For write queries, implement authorization checks and confirmation before committing."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "security",
+      "line": "42-43",
+      "description": "Database connection error details (including potentially sensitive connection info like hostnames, ports, usernames) are logged via `logger.error(f\"Database connection failed: {e}\")`. The `OperationalError` exception can contain connection strings or credential fragments.",
+      "exploit": "If logs are accessible to unauthorized users (e.g., shared log files, log aggregation systems, stdout in container environments), connection details could be leaked.",
+      "fix": "Log a generic error message and log the detailed exception at DEBUG level only, or sanitize the exception message before logging."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "78",
+      "description": "`logger.error(f\"SQL Execution Error: {e.pgerror}\")` logs the PostgreSQL error message which can contain table names, column names, query fragments, and internal schema details. This is an information disclosure risk.",
+      "exploit": "An attacker who can trigger SQL errors and view logs can enumerate database schema, table structures, and column names through crafted malformed queries.",
+      "fix": "Log detailed SQL errors at DEBUG level only. Log a generic message at ERROR level. Never expose `pgerror` in user-facing output."
+    },
+    {
+      "id": 9,
+      "severity": "low",
+      "type": "security",
+      "line": "25",
+      "description": "No SSL/TLS configuration for the database connection. By default, psycopg2 may connect without encryption, sending credentials and data in plaintext over the network.",
+      "exploit": "An attacker on the network path can sniff database credentials and query data via passive network monitoring.",
+      "fix": "Add `sslmode: 'require'` (or `'verify-full'`) to `db_config` and configure appropriate SSL certificates."
+    }
+  ],
+  "referee_verdict": {
+    "raw": "```json\n{\n  \"final_issues\": [\n    {\n      \"issue_id\": 1,\n      \"final_verdict\": \"rejected\",\n      \"final_severity\": \"info\",\n      \"explanation\": \"The script is explicitly designed as a CLI database client ('Expects SQL query as a command-line argument or via interactive prompt'). Executing user-provided SQL is its intended functionality, not a vulnerability. Furthermore, the script requires the user to supply the database credentials via environment variables. If the user already has the database credentials in their environment, they can connect to the database directly; the script does not grant them any additional privileges. Both the Finder and Adversary incorrectly identify intended functionality as a critical vulnerability.\"\n    },\n    {\n      \"issue",
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "confirmed",
+        "final_severity": "critical",
+        "explanation": "Fallback from adversary stage: The `execute_query` method accepts a raw SQL query string directly from user input and passes it to `cursor.execute()`. While parameterized queries are supported via `params`, the `main()` function passes user-supplied SQL as the query structure itself, meaning arbitrary SQL (DROP TABLE, data exfiltration, privilege escalation) can be executed."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "confirmed",
+        "final_severity": "high",
+        "explanation": "Fallback from adversary stage: `conn.commit()` is called unconditionally after every query, including destructive DML/DDL statements (INSERT, UPDATE, DELETE, DROP, ALTER). Combined with the arbitrary query execution, this ensures all destructive operations are persisted immediately with no rollback opportunity."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Fallback from adversary stage: Database connection error details (including potentially sensitive connection info like hostnames, ports, usernames) are logged via `logger.error(f\"Database connection failed: {e}\")`. The `OperationalError` exception can contain connection strings or credential fragments."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Fallback from adversary stage: `logger.error(f\"SQL Execution Error: {e.pgerror}\")` logs the PostgreSQL error message which can contain table names, column names, query fragments, and internal schema details. This is an information disclosure risk."
+      },
+      {
+        "issue_id": 9,
+        "final_verdict": "confirmed",
+        "final_severity": "low",
+        "explanation": "Fallback from adversary stage: No SSL/TLS configuration for the database connection. By default, psycopg2 may connect without encryption, sending credentials and data in plaintext over the network."
+      }
+    ],
+    "summary": {
+      "total_found": 12,
+      "confirmed": 5,
+      "rejected": 7,
+      "modified": 0,
+      "finder_accuracy": 0.42,
+      "adversary_accuracy": 0.0,
+      "referee_fallback": true
+    },
+    "overall_code_quality": "critical"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

@@ -91,27 +91,69 @@ def _a(model_name: str, temp: float) -> ModelConfig:
     return ModelConfig(Provider.ANTHROPIC, model_name, temperature=temp)
 
 
+# ── Model-name string constants (shared across experiments) ───────────────────
+MODEL_SONNET     = "claude-sonnet-4-6"
+MODEL_OPUS       = "claude-opus-4-6"
+MODEL_HAIKU      = "claude-haiku-4-5-20251001"
+MODEL_FLASH      = "gemini-3-flash-preview"
+MODEL_PRO        = "gemini-3.1-pro-preview"
+MODEL_FLASH_LITE = "gemini-3.1-flash-lite-preview"
+
+
+# ── Experiment 1 trial list: (trial_num, model_name, thinking_level) ──────────
+THINKING_SWEEP_TRIALS: list[tuple[int, str, str]] = [
+    (1, MODEL_PRO,        "low"),
+    (2, MODEL_PRO,        "medium"),
+    (3, MODEL_PRO,        "high"),
+    (4, MODEL_FLASH,      "minimal"),
+    (5, MODEL_FLASH,      "low"),
+    (6, MODEL_FLASH,      "medium"),
+    (7, MODEL_FLASH,      "high"),
+    (8, MODEL_FLASH_LITE, "minimal"),
+    (9, MODEL_FLASH_LITE, "low"),
+]
+
+
+# ── Experiment 2 config list: (config_name, gen, finder, adv, ref) ────────────
+MIXED_MODEL_CONFIGS: list[tuple] = [
+    ("config1_anthropic_finder_google_adv",
+     _g(MODEL_FLASH, 0.3, "high"), _a(MODEL_SONNET, 0.7),
+     _g(MODEL_FLASH, 1.0, "high"), _a(MODEL_SONNET, 0.1)),
+    ("config2_google_finder_anthropic_adv",
+     _g(MODEL_FLASH, 0.3, "high"), _g(MODEL_FLASH, 1.0, "high"),
+     _a(MODEL_SONNET, 0.7), _a(MODEL_SONNET, 0.1)),
+    ("config3_opus_finder_google_pro_adv",
+     _g(MODEL_FLASH, 0.3, "high"), _a(MODEL_OPUS, 0.7),
+     _g(MODEL_PRO, 1.0, "high"), _g(MODEL_PRO, 0.1, "high")),
+    ("config4_opus_finder_sonnet_adv",
+     _g(MODEL_FLASH, 0.3, "high"), _a(MODEL_OPUS, 0.7),
+     _a(MODEL_SONNET, 0.7), _g(MODEL_PRO, 0.1, "high")),
+    ("config5_opus_finder_haiku_adv",
+     _g(MODEL_FLASH, 0.3, "high"), _a(MODEL_OPUS, 0.7),
+     _a(MODEL_HAIKU, 0.7), _g(MODEL_PRO, 0.1, "high")),
+    ("config6_google_heavy_opus_referee",
+     _a(MODEL_SONNET, 0.3), _g(MODEL_PRO, 1.0, "high"),
+     _g(MODEL_FLASH, 1.0, "high"), _a(MODEL_OPUS, 0.1)),
+]
+
+MIXED_MODEL_TASKS: list[tuple[str, str]] = [
+    ("task_a_sql",  TASK_SQL),
+    ("task_b_ssrf", TASK_SSRF),
+]
+
+
+# ── Experiment 3 temperature list ─────────────────────────────────────────────
+SONNET_THRESHOLD_TEMPS: list[float] = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+
 # ── Experiment 1: Gemini Thinking-Level Sweep ─────────────────────────────────
 def run_thinking_sweep() -> list[dict]:
-    trials = [
-        # (trial, model, thinking_level)
-        (1,  "gemini-3.1-pro-preview",       "low"),
-        (2,  "gemini-3.1-pro-preview",       "medium"),
-        (3,  "gemini-3.1-pro-preview",       "high"),
-        (4,  "gemini-3-flash-preview",       "minimal"),
-        (5,  "gemini-3-flash-preview",       "low"),
-        (6,  "gemini-3-flash-preview",       "medium"),
-        (7,  "gemini-3-flash-preview",       "high"),
-        (8,  "gemini-3.1-flash-lite-preview","minimal"),
-        (9,  "gemini-3.1-flash-lite-preview","low"),
-    ]
-
     rows = []
     print("\n" + "=" * 70)
     print("EXPERIMENT 1: Gemini Thinking-Level Sweep (9 trials)")
     print("=" * 70)
 
-    for trial_num, model, thinking in trials:
+    for trial_num, model, thinking in THINKING_SWEEP_TRIALS:
         label = f"E1 Trial {trial_num}: {model} / thinking={thinking}"
         print(f"\n[{trial_num}/9] {label}")
 
@@ -139,37 +181,14 @@ def run_thinking_sweep() -> list[dict]:
 
 # ── Experiment 2: Cross-Provider Mixed-Model Trials ───────────────────────────
 def run_mixed_model() -> list[dict]:
-    SONNET  = "claude-sonnet-4-6"
-    OPUS    = "claude-opus-4-6"
-    HAIKU   = "claude-haiku-4-5-20251001"
-    FLASH   = "gemini-3-flash-preview"
-    PRO     = "gemini-3.1-pro-preview"
-
-    configs = [
-        # (name, gen_cfg, finder_cfg, adv_cfg, ref_cfg)
-        ("config1_anthropic_finder_google_adv",
-         _g(FLASH, 0.3, "high"), _a(SONNET, 0.7), _g(FLASH, 1.0, "high"), _a(SONNET, 0.1)),
-        ("config2_google_finder_anthropic_adv",
-         _g(FLASH, 0.3, "high"), _g(FLASH, 1.0, "high"), _a(SONNET, 0.7), _a(SONNET, 0.1)),
-        ("config3_opus_finder_google_pro_adv",
-         _g(FLASH, 0.3, "high"), _a(OPUS, 0.7), _g(PRO, 1.0, "high"), _g(PRO, 0.1, "high")),
-        ("config4_opus_finder_sonnet_adv",
-         _g(FLASH, 0.3, "high"), _a(OPUS, 0.7), _a(SONNET, 0.7), _g(PRO, 0.1, "high")),
-        ("config5_opus_finder_haiku_adv",
-         _g(FLASH, 0.3, "high"), _a(OPUS, 0.7), _a(HAIKU, 0.7), _g(PRO, 0.1, "high")),
-        ("config6_google_heavy_opus_referee",
-         _a(SONNET, 0.3), _g(PRO, 1.0, "high"), _g(FLASH, 1.0, "high"), _a(OPUS, 0.1)),
-    ]
-    tasks = [("task_a_sql", TASK_SQL), ("task_b_ssrf", TASK_SSRF)]
-
     rows = []
     trial_num = 0
     print("\n" + "=" * 70)
     print("EXPERIMENT 2: Cross-Provider Mixed-Model Trials (12 trials)")
     print("=" * 70)
 
-    for config_name, gen_cfg, finder_cfg, adv_cfg, ref_cfg in configs:
-        for task_label, task in tasks:
+    for config_name, gen_cfg, finder_cfg, adv_cfg, ref_cfg in MIXED_MODEL_CONFIGS:
+        for task_label, task in MIXED_MODEL_TASKS:
             trial_num += 1
             label = f"E2 Trial {trial_num}/12: {config_name} / {task_label}"
             print(f"\n[{trial_num}/12] {label}")
@@ -200,22 +219,19 @@ def run_mixed_model() -> list[dict]:
 
 # ── Experiment 3: Sonnet Self-Review Temperature Threshold ────────────────────
 def run_sonnet_threshold() -> list[dict]:
-    SONNET = "claude-sonnet-4-6"
-    finder_temps = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-
     rows = []
     print("\n" + "=" * 70)
     print("EXPERIMENT 3: Sonnet Self-Review Temperature Threshold (6 trials)")
     print("=" * 70)
 
-    for i, finder_temp in enumerate(finder_temps, 1):
+    for i, finder_temp in enumerate(SONNET_THRESHOLD_TEMPS, 1):
         label = f"E3 Trial {i}/6: Sonnet finder_temp={finder_temp}"
         print(f"\n[{i}/6] {label}")
 
-        gen_cfg    = _a(SONNET, 0.3)
-        finder_cfg = _a(SONNET, finder_temp)
-        adv_cfg    = _a(SONNET, 0.7)
-        ref_cfg    = _a(SONNET, 0.1)
+        gen_cfg    = _a(MODEL_SONNET, 0.3)
+        finder_cfg = _a(MODEL_SONNET, finder_temp)
+        adv_cfg    = _a(MODEL_SONNET, 0.7)
+        ref_cfg    = _a(MODEL_SONNET, 0.1)
 
         metrics = _run_trial(gen_cfg, finder_cfg, adv_cfg, ref_cfg, TASK_SQL, label)
         row = {"finder_temp": finder_temp, **metrics}

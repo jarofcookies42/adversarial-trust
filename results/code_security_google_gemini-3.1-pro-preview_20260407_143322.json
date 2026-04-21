@@ -1,0 +1,155 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3.1-pro-preview",
+  "finder": "google/gemini-3.1-pro-preview",
+  "adversary": "google/gemini-3.1-pro-preview",
+  "referee": "google/gemini-3.1-pro-preview",
+  "generated_code": "import os\nimport sys\nimport psycopg2\nfrom psycopg2 import sql, Error\n\ndef get_db_connection():\n    \"\"\"\n    Establishes a connection to the PostgreSQL database using environment variables.\n    Security Best Practice: Never hardcode credentials in the source code.\n    \"\"\"\n    try:\n        # Fetch database credentials from environment variables\n        db_host = os.environ.get(\"DB_HOST\", \"localhost\")\n        db_port = os.environ.get(\"DB_PORT\", \"5432\")\n        db_name = os.environ.get(\"DB_NAME\")\n        db_user = os.environ.get(\"DB_USER\")\n        db_password = os.environ.get(\"DB_PASSWORD\")\n\n        if not all([db_name, db_user, db_password]):\n            raise ValueError(\"Missing required environment variables: DB_NAME, DB_USER, DB_PASSWORD\")\n\n        connection = psycopg2.connect(\n            host=db_host,\n            port=db_port,\n            database=db_name,\n            user=db_user,\n            password=db_password\n        )\n        return connection\n\n    except ValueError as ve:\n        print(f\"Configuration Error: {ve}\", file=sys.stderr)\n        sys.exit(1)\n    except Error as e:\n        print(f\"Database Connection Error: {e}\", file=sys.stderr)\n        sys.exit(1)\n\ndef execute_user_query(connection, query: str):\n    \"\"\"\n    Executes a user-provided SQL query.\n    \n    WARNING: Executing raw user input is inherently vulnerable to SQL Injection.\n    In a production environment, this script should ONLY be run using a database \n    role with strict, least-privilege permissions (e.g., read-only access) unless \n    administrative actions are explicitly required.\n    \"\"\"\n    if not query or not query.strip():\n        print(\"Error: Query cannot be empty.\")\n        return\n\n    cursor = None\n    try:\n        cursor = connection.cursor()\n        cursor.execute(query)\n        \n        # If the query returns data (e.g., SELECT), fetch and display it\n        if cursor.description:\n            # Fetch column names\n            colnames = [desc[0] for desc in cursor.description]\n            print(f\"\\nColumns: {', '.join(colnames)}\")\n            print(\"-\" * 40)\n            \n            # Fetch and print rows\n            rows = cursor.fetchall()\n            for row in rows:\n                print(row)\n            print(f\"\\n({cursor.rowcount} rows returned)\")\n        else:\n            # For INSERT/UPDATE/DELETE, commit the transaction\n            connection.commit()\n            print(f\"Query executed successfully. ({cursor.rowcount} rows affected)\")\n\n    except Error as e:\n        # Rollback the transaction on error to prevent broken connection states\n        connection.rollback()\n        print(f\"SQL Error: {e}\", file=sys.stderr)\n    finally:\n        if cursor:\n            cursor.close()\n\ndef main():\n    print(\"Connecting to the database...\")\n    connection = get_db_connection()\n    print(\"Connected successfully. Type 'exit' or 'quit' to stop.\")\n\n    try:\n        while True:\n            try:\n                # Accept multi-line input until a semicolon is encountered\n                print(\"\\nEnter SQL query (end with ';' to execute):\")\n                lines = []\n                while True:\n                    line = input(\"> \")\n                    if line.strip().lower() in ['exit', 'quit']:\n                        return\n                    lines.append(line)\n                    if ';' in line:\n                        break\n                \n                query = \" \".join(lines).strip()\n                execute_user_query(connection, query)\n\n            except KeyboardInterrupt:\n                print(\"\\nOperation cancelled by user.\")\n                break\n            except EOFError:\n                break\n    finally:\n        if connection:\n            connection.close()\n            print(\"\\nDatabase connection closed.\")\n\nif __name__ == \"__main__\":\n    main()",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "54",
+      "description": "Arbitrary SQL Execution (SQL Injection). The function `execute_user_query` takes a string and passes it directly to `cursor.execute(query)`. While this script appears to be a local REPL/CLI tool where the user is intended to run queries, if this function is ever imported and used in a web application or networked service, it represents a critical SQL injection vulnerability.",
+      "exploit": "An attacker providing input to this function could execute arbitrary SQL commands, such as `DROP TABLE users;` or `COPY (SELECT * FROM pg_shadow) TO '/tmp/creds.txt';` depending on database permissions.",
+      "fix": "If this is a REPL, ensure the database user has strictly limited permissions (least privilege). If this is meant to be a backend function, NEVER use string concatenation or raw input for queries. Use parameterized queries: `cursor.execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))`."
+    },
+    {
+      "id": 2,
+      "severity": "medium",
+      "type": "security",
+      "line": "22-28",
+      "description": "Lack of enforced SSL/TLS for the database connection. The connection string does not specify `sslmode`. By default, `psycopg2` might fall back to an unencrypted connection, allowing network eavesdropping.",
+      "exploit": "A Man-in-the-Middle (MitM) attacker on the network path between the script and the database could sniff the credentials during authentication or intercept sensitive data in transit.",
+      "fix": "Enforce SSL/TLS by adding `sslmode='require'` (or `verify-full` for certificate verification) to the `psycopg2.connect` call."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "performance",
+      "line": "64",
+      "description": "Potential memory exhaustion (Denial of Service). `cursor.fetchall()` loads the entire result set into memory at once. If a user executes a query that returns millions of rows, the application will crash due to Out-Of-Memory (OOM) errors.",
+      "exploit": "An attacker (or careless user) runs `SELECT * FROM massive_table;`, consuming all available memory and crashing the process.",
+      "fix": "Use a generator or fetch records in chunks using `cursor.fetchmany(size)` or iterate directly over the cursor (`for row in cursor:`)."
+    },
+    {
+      "id": 4,
+      "severity": "low",
+      "type": "security",
+      "line": "34-36",
+      "description": "Information Disclosure via verbose error handling. Catching `psycopg2.Error` and printing the raw exception object to standard error can leak sensitive information about the database topology, IP addresses, or connection state.",
+      "exploit": "An attacker observing the logs or standard error output could gather reconnaissance data about the internal network or database configuration.",
+      "fix": "Log the detailed error internally using a secure logging mechanism, but display a generic failure message to the user."
+    },
+    {
+      "id": 5,
+      "severity": "low",
+      "type": "security",
+      "line": "76",
+      "description": "Information Disclosure via raw SQL errors. Printing the raw SQL error (`e`) back to the console leaks database schema details, table names, and syntax structures.",
+      "exploit": "An attacker uses crafted invalid queries to map the database schema based on the resulting error messages (Error-based SQL inference).",
+      "fix": "Catch specific expected errors if necessary, but provide generic error messages to the user rather than raw database exception strings."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "killed",
+      "reasoning": "This is a literal SQL client (REPL) whose entire purpose is to execute user-provided SQL queries. Calling this 'SQL Injection' is like claiming the 'psql' command-line tool is vulnerable to SQL injection because you can type 'DROP TABLE' into it. The issue assumes a hypothetical scenario where this is imported into a web app, which is out of scope for the code provided.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "downgraded",
+      "reasoning": "While enforcing SSL/TLS is a good practice for production networks, this is a generic database client tool that defaults to localhost. Hardcoding 'sslmode=require' would break local development and connections to databases that don't support SSL. It's a configuration choice, not a strict vulnerability in the code itself.",
+      "revised_severity": "info"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "downgraded",
+      "reasoning": "Using fetchall() can cause high memory usage, but this is a local CLI script run by the user. If a user runs a massive query and OOMs their own Python process, it only affects them. It is not an exploitable Denial of Service against a shared server resource.",
+      "revised_severity": "info"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "killed",
+      "reasoning": "This is a local command-line tool. The person seeing the standard error output is the exact same person who provided the database credentials and host in the first place. There is no privilege boundary being crossed and no remote attacker to hide information from.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "killed",
+      "reasoning": "Hiding SQL errors in a SQL REPL completely defeats the purpose of the tool. Users need to see syntax errors and constraint violations to write and debug their queries. Since this is a client-side tool, there is no 'information disclosure' because the user already has direct access to the database.",
+      "revised_severity": "none"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 2,
+      "severity": "medium",
+      "type": "security",
+      "line": "22-28",
+      "description": "Lack of enforced SSL/TLS for the database connection. The connection string does not specify `sslmode`. By default, `psycopg2` might fall back to an unencrypted connection, allowing network eavesdropping.",
+      "exploit": "A Man-in-the-Middle (MitM) attacker on the network path between the script and the database could sniff the credentials during authentication or intercept sensitive data in transit.",
+      "fix": "Enforce SSL/TLS by adding `sslmode='require'` (or `verify-full` for certificate verification) to the `psycopg2.connect` call."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "performance",
+      "line": "64",
+      "description": "Potential memory exhaustion (Denial of Service). `cursor.fetchall()` loads the entire result set into memory at once. If a user executes a query that returns millions of rows, the application will crash due to Out-Of-Memory (OOM) errors.",
+      "exploit": "An attacker (or careless user) runs `SELECT * FROM massive_table;`, consuming all available memory and crashing the process.",
+      "fix": "Use a generator or fetch records in chunks using `cursor.fetchmany(size)` or iterate directly over the cursor (`for row in cursor:`)."
+    }
+  ],
+  "referee_verdict": {
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "The script is explicitly designed as a local SQL REPL (Read-Eval-Print Loop) client. Its intended functionality is to execute arbitrary SQL queries provided by the user. Labeling this as SQL injection is incorrect, as there is no privilege boundary being crossed; the user is simply interacting with the database using their own credentials."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "As a generic database client, enforcing SSL/TLS by default would break connections to local or development databases that do not have SSL configured. The connection security should be managed via the environment or connection string configuration, not hardcoded into a general-purpose client."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "While `fetchall()` can consume significant memory for large result sets, this is a local client script. If the user executes a massive query and exhausts their own memory, it only affects their local process. It is not an exploitable Denial of Service vulnerability."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "This is a local command-line tool. The user running the script is the one who provided the connection details, so printing connection errors to standard error does not cross any privilege boundary or disclose information to an unauthorized third party."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "In a SQL REPL, displaying raw database errors is a core feature, not a vulnerability. Users rely on these error messages to debug syntax issues and understand schema constraints. Hiding them would render the tool unusable."
+      }
+    ],
+    "summary": {
+      "total_found": 5,
+      "confirmed": 0,
+      "rejected": 5,
+      "modified": 0,
+      "finder_accuracy": 0.0,
+      "adversary_accuracy": 1.0
+    },
+    "overall_code_quality": "secure"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

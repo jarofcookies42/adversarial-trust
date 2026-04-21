@@ -1,0 +1,304 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3-flash-preview",
+  "finder": "anthropic/claude-opus-4-6",
+  "adversary": "anthropic/claude-haiku-4-5-20251001",
+  "referee": "google/gemini-3.1-pro-preview",
+  "generated_code": "import os\nimport sys\nimport psycopg2\nfrom psycopg2 import Error, extras\nfrom typing import Optional, List, Any\n\ndef get_db_connection():\n    \"\"\"\n    Establishes a connection to the PostgreSQL database using environment variables.\n    Returns a connection object.\n    \"\"\"\n    try:\n        # It is a security best practice to use environment variables for credentials\n        # rather than hardcoding them in the source code.\n        conn = psycopg2.connect(\n            host=os.getenv(\"DB_HOST\", \"localhost\"),\n            database=os.getenv(\"DB_NAME\"),\n            user=os.getenv(\"DB_USER\"),\n            password=os.getenv(\"DB_PASSWORD\"),\n            port=os.getenv(\"DB_PORT\", \"5432\"),\n            connect_timeout=5\n        )\n        return conn\n    except Error as e:\n        print(f\"Error: Unable to connect to the database.\\n{e}\")\n        sys.exit(1)\n\ndef execute_user_query(query: str, params: Optional[tuple] = None):\n    \"\"\"\n    Executes a user-provided SQL query safely.\n    \n    Args:\n        query (str): The SQL query string to execute.\n        params (tuple, optional): Parameters for the query to prevent SQL injection.\n    \"\"\"\n    if not query.strip():\n        print(\"Error: Query string is empty.\")\n        return\n\n    conn = None\n    try:\n        conn = get_db_connection()\n        # Using RealDictCursor allows accessing results like a dictionary\n        with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:\n            # Execute the query. \n            # Note: While this script runs 'user-provided' SQL, \n            # always use parameterized queries (params) when values are dynamic.\n            cur.execute(query, params)\n\n            # Check if the query returns data (e.g., SELECT)\n            if cur.description:\n                rows = cur.fetchall()\n                display_results(rows)\n            else:\n                # For INSERT, UPDATE, DELETE, etc.\n                conn.commit()\n                print(f\"Query executed successfully. Rows affected: {cur.rowcount}\")\n\n    except psycopg2.DatabaseError as e:\n        if conn:\n            conn.rollback()\n        print(f\"Database error: {e}\")\n    except Exception as e:\n        print(f\"An unexpected error occurred: {e}\")\n    finally:\n        if conn:\n            conn.close()\n\ndef display_results(rows: List[dict]):\n    \"\"\"\n    Formats and prints the result set from a SELECT query.\n    \"\"\"\n    if not rows:\n        print(\"Query returned no results.\")\n        return\n\n    # Extract headers from the first dictionary\n    headers = rows[0].keys()\n    header_line = \" | \".join(str(h).upper() for h in headers)\n    print(\"-\" * len(header_line))\n    print(header_line)\n    print(\"-\" * len(header_line))\n\n    for row in rows:\n        print(\" | \".join(str(row[h]) for h in headers))\n    print(\"-\" * len(header_line))\n\ndef main():\n    \"\"\"\n    Main entry point for the CLI tool.\n    \"\"\"\n    # Check if required environment variables are set\n    required_vars = [\"DB_NAME\", \"DB_USER\", \"DB_PASSWORD\"]\n    missing = [var for var in required_vars if not os.getenv(var)]\n    \n    if missing:\n        print(f\"Error: Missing environment variables: {', '.join(missing)}\")\n        print(\"Please set DB_NAME, DB_USER, and DB_PASSWORD.\")\n        sys.exit(1)\n\n    print(\"PostgreSQL Query Runner\")\n    print(\"Type 'exit' or 'quit' to stop.\")\n\n    while True:\n        try:\n            user_input = input(\"\\nSQL> \").strip()\n            \n            if user_input.lower() in (\"exit\", \"quit\", \"\\\\q\"):\n                break\n            \n            if not user_input:\n                continue\n\n            # In a production scenario, you might want to restrict \n            # certain keywords (e.g., DROP TABLE) depending on the user's role.\n            execute_user_query(user_input)\n\n        except KeyboardInterrupt:\n            print(\"\\nExiting...\")\n            break\n\nif __name__ == \"__main__\":\n    # Example usage:\n    # export DB_NAME=mydb DB_USER=myuser DB_PASSWORD=mypass\n    # python script.py\n    main()",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "100-107",
+      "description": "Arbitrary SQL execution with no authorization or restriction. The tool accepts any SQL statement from the user and executes it directly against the database, including DROP TABLE, DROP DATABASE, GRANT, CREATE USER, DELETE FROM, TRUNCATE, etc. There is no allowlist, no role-based access control, and no query restriction whatsoever.",
+      "exploit": "A user (or anyone with access to the terminal) can type `DROP DATABASE mydb;` or `CREATE USER hacker WITH SUPERUSER PASSWORD 'pwned';` or exfiltrate any data from any table. If this tool is exposed via any remote interface (e.g., wrapped in a web service), the impact is total database compromise.",
+      "fix": "Implement strict query allowlisting (e.g., only SELECT), role-based access control, and use a database user with minimal privileges (read-only if possible). Add explicit checks to reject DDL and dangerous statements."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "46",
+      "description": "The parameterized query mechanism exists but is never actually used. The `execute_user_query` function accepts `params` but `main()` always calls it with only the raw user input string and no parameters. The user's input is passed directly as the query string, making parameterization moot — the entire query IS user-controlled.",
+      "exploit": "Since the entire query is user-supplied (not just parameter values), parameterization provides zero protection. Any SQL can be executed. This is distinct from SQL injection in the traditional sense — it's direct arbitrary query execution.",
+      "fix": "If the intent is to allow arbitrary queries, at minimum restrict to SELECT-only and use a read-only database role. If the intent is parameterized queries, redesign the interface so users provide template queries and separate parameter values."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "security",
+      "line": "56-57",
+      "description": "Database error messages are printed directly to the user, potentially leaking sensitive information such as table structures, column names, internal paths, PostgreSQL version, and configuration details.",
+      "exploit": "An attacker can craft malformed queries to trigger detailed error messages that reveal database schema, version info, and internal structure, aiding further attacks.",
+      "fix": "Log detailed errors server-side and show only generic error messages to the user. E.g., `print('A database error occurred. Please check your query.')` while logging the full error to a secure log file."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "58-59",
+      "description": "Catching broad `Exception` and printing its message can leak sensitive internal information including file paths, stack details, and system configuration.",
+      "exploit": "Unexpected exceptions may contain sensitive details about the system internals that could be useful for reconnaissance.",
+      "fix": "Log the full exception to a secure log file and display only a generic error message to the user."
+    },
+    {
+      "id": 5,
+      "severity": "medium",
+      "type": "security",
+      "line": "25",
+      "description": "Database connection error details (including potentially the hostname, port, database name, and partial credential info from the psycopg2 error) are printed to stdout.",
+      "exploit": "If output is visible to an attacker (e.g., in logs, web response), connection error messages can reveal infrastructure details.",
+      "fix": "Log errors securely and show only a generic connection failure message."
+    },
+    {
+      "id": 6,
+      "severity": "medium",
+      "type": "security",
+      "line": "15-21",
+      "description": "No SSL/TLS configuration for the database connection. The connection defaults to unencrypted, meaning credentials and query data are transmitted in plaintext over the network.",
+      "exploit": "An attacker performing network sniffing (MITM) on the path between the application and the database can capture credentials and all query data/results in plaintext.",
+      "fix": "Add `sslmode='require'` (or `'verify-full'` for production) to the `psycopg2.connect()` call, and configure appropriate SSL certificates."
+    },
+    {
+      "id": 7,
+      "severity": "low",
+      "type": "security",
+      "line": "16",
+      "description": "Default fallback values for DB_HOST ('localhost') and DB_PORT ('5432') are used. While not directly exploitable, if environment variables are accidentally unset, the application silently connects to localhost which may be an unintended target.",
+      "exploit": "In containerized or multi-host environments, connecting to localhost by default could reach an unintended or malicious database instance.",
+      "fix": "Consider making DB_HOST a required environment variable with no default, or at least log a warning when defaults are used."
+    },
+    {
+      "id": 8,
+      "severity": "low",
+      "type": "logic",
+      "line": "48-53",
+      "description": "The check `if cur.description` to determine whether to commit is fragile. Some statements (e.g., `DO $$ ... $$`, CTEs with side effects, `RETURNING` clauses) may or may not set `cur.description` as expected, leading to missed commits or unexpected behavior.",
+      "exploit": "A query like `INSERT INTO t VALUES (1) RETURNING *` will have `cur.description` set, so the INSERT will not be committed, silently losing data.",
+      "fix": "Use explicit transaction management or check the query type more robustly. Consider using `conn.autocommit = True` or always committing after non-SELECT statements identified by parsing the command status via `cur.statusmessage`."
+    },
+    {
+      "id": 9,
+      "severity": "low",
+      "type": "performance",
+      "line": "41-62",
+      "description": "A new database connection is created and destroyed for every single query. This is inefficient and adds latency, especially with the 5-second connect_timeout.",
+      "exploit": "Not directly exploitable, but rapid query execution could exhaust database connection limits (denial of service).",
+      "fix": "Use connection pooling (e.g., `psycopg2.pool.SimpleConnectionPool`) or reuse a single connection across the interactive session."
+    },
+    {
+      "id": 10,
+      "severity": "low",
+      "type": "logic",
+      "line": "49",
+      "description": "If the user submits multiple SQL statements separated by semicolons (e.g., `SELECT 1; DROP TABLE users;`), psycopg2 will execute them all. This bypasses any single-statement assumptions.",
+      "exploit": "Even if a hypothetical SELECT-only filter were added, an attacker could append destructive statements after a semicolon.",
+      "fix": "Explicitly disallow multiple statements by checking for semicolons in non-terminal positions, or use a SQL parser to ensure only a single statement is provided."
+    },
+    {
+      "id": 11,
+      "severity": "info",
+      "type": "security",
+      "line": "84-86",
+      "description": "The comment on lines 99-100 acknowledges that dangerous keywords like DROP TABLE should be restricted but no such restriction is implemented. This is a known-but-unaddressed risk.",
+      "exploit": "The acknowledged risk is fully exploitable in the current state.",
+      "fix": "Implement the suggested restrictions rather than leaving them as comments."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "valid",
+      "reasoning": "This is a genuine and critical vulnerability. The tool is explicitly designed as an interactive SQL runner that accepts arbitrary user input and executes it directly. There is zero authorization, no query filtering, no role-based access control, and no statement allowlisting. The code comment even acknowledges this is a known risk ('you might want to restrict certain keywords') but implements nothing. In any deployment scenario—whether local, containerized, or wrapped in a web service—this is a direct path to total database compromise. The vulnerability is not theoretical; it's the intended functionality with no safeguards.",
+      "revised_severity": "critical"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "killed",
+      "reasoning": "This finding conflates two different concepts and mischaracterizes the risk. The issue claims parameterization is 'moot' because `main()` doesn't use the `params` argument. However, this is not a vulnerability in the code—it's a design choice. The function signature correctly supports parameterized queries (the mechanism exists and works), but `main()` chooses not to use it. The real issue is Issue #1 (arbitrary SQL execution), not that parameterization 'doesn't work.' The parameterization mechanism itself is sound; the vulnerability is the deliberate acceptance of arbitrary user queries. Calling this a separate 'parameterization bypass' is misleading—parameterization is not being bypassed; it's being intentionally not used because the tool's purpose is to execute user-supplied SQL directly.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "valid",
+      "reasoning": "Information disclosure through error messages is a real concern. The code prints raw psycopg2 error messages directly to stdout (line 56). While this is a CLI tool (not a web service), database error messages can leak schema information, table names, column names, and PostgreSQL internals. If this tool's output is captured in logs, forwarded to monitoring systems, or exposed via any wrapper interface, this becomes an information disclosure vulnerability. The fix (generic error messages + secure logging) is appropriate.",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "valid",
+      "reasoning": "Printing broad exception messages is a legitimate information disclosure risk. While the current code is a CLI tool, the same concern as Issue #3 applies: exceptions may contain file paths, system details, or other sensitive information. However, the severity is slightly lower than #3 because the code already has specific exception handlers for `psycopg2.DatabaseError` and only falls back to generic `Exception` for truly unexpected errors. Still, the principle is sound—generic error messages are better practice.",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "valid",
+      "reasoning": "Connection error messages printed to stdout can leak infrastructure details (hostname, port, database name, psycopg2 error context). While this is a CLI tool and the user is already providing credentials, if output is logged or exposed, this is information disclosure. The fix is appropriate.",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 6,
+      "verdict": "valid",
+      "reasoning": "No SSL/TLS is configured for the database connection. The `psycopg2.connect()` call does not specify `sslmode`, which defaults to 'prefer' (unencrypted if available). In a production environment or over untrusted networks, this is a real vulnerability—credentials and query data traverse the network in plaintext and are vulnerable to MITM attacks. However, severity depends on deployment context: if the database is on localhost or a trusted LAN, risk is lower. But as a general security issue, this is valid. The fix (sslmode='require') is correct.",
+      "revised_severity": "high"
+    },
+    {
+      "issue_id": 7,
+      "verdict": "killed",
+      "reasoning": "This is not a security vulnerability; it's a minor design preference. The defaults (localhost:5432) are sensible for a development/CLI tool. The risk described ('connecting to an unintended database') is not a real attack vector—an attacker would need to already control the environment and environment variables, at which point they have far easier paths to compromise. The suggestion to require DB_HOST is reasonable for production hardening, but this is not a security issue.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 8,
+      "verdict": "killed",
+      "reasoning": "The issue description is technically inaccurate. The code checks `if cur.description` to determine if a result set exists. For `INSERT INTO t VALUES (1) RETURNING *`, `cur.description` WILL be set (because RETURNING produces a result set), so the code will call `fetchall()` and NOT commit—which is actually wrong, but not in the way described. However, this is a minor logic bug, not a security vulnerability. The real issue is that the commit logic is fragile and could lose data, but it's not an exploitable security flaw. Downgrade to 'low' logic issue at most, but the specific exploit described (data loss from RETURNING) is not how the code behaves.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 9,
+      "verdict": "killed",
+      "reasoning": "This is a performance/efficiency concern, not a security vulnerability. While creating a new connection per query is inefficient, it does not create an exploitable security flaw. The claim that 'rapid query execution could exhaust connection limits' is not a realistic threat—the user is interactively typing queries in a CLI loop, not generating rapid-fire requests. Connection pooling is good practice, but the absence of it is not a vulnerability.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 10,
+      "verdict": "valid",
+      "reasoning": "Multiple SQL statements separated by semicolons will be executed together by psycopg2. This is a real concern because an attacker could execute `SELECT 1; DROP TABLE users;` and both statements would run. However, this is not a separate vulnerability from Issue #1—it's a corollary of the core problem (arbitrary SQL execution). The tool already allows arbitrary SQL, so this is already exploitable. The suggestion to parse statements is valid defense-in-depth, but the core issue is #1.",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 11,
+      "verdict": "valid",
+      "reasoning": "The code explicitly acknowledges in comments that dangerous keywords should be restricted but does not implement any such restrictions. This is a known-but-unaddressed risk. The comment itself (lines 99-100) says 'In a production scenario, you might want to restrict certain keywords (e.g., DROP TABLE)' but provides no implementation. This is a valid observation that the acknowledged threat is unmitigated, though it's really just reinforcing Issue #1.",
+      "revised_severity": "critical"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "100-107",
+      "description": "Arbitrary SQL execution with no authorization or restriction. The tool accepts any SQL statement from the user and executes it directly against the database, including DROP TABLE, DROP DATABASE, GRANT, CREATE USER, DELETE FROM, TRUNCATE, etc. There is no allowlist, no role-based access control, and no query restriction whatsoever.",
+      "exploit": "A user (or anyone with access to the terminal) can type `DROP DATABASE mydb;` or `CREATE USER hacker WITH SUPERUSER PASSWORD 'pwned';` or exfiltrate any data from any table. If this tool is exposed via any remote interface (e.g., wrapped in a web service), the impact is total database compromise.",
+      "fix": "Implement strict query allowlisting (e.g., only SELECT), role-based access control, and use a database user with minimal privileges (read-only if possible). Add explicit checks to reject DDL and dangerous statements."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "security",
+      "line": "56-57",
+      "description": "Database error messages are printed directly to the user, potentially leaking sensitive information such as table structures, column names, internal paths, PostgreSQL version, and configuration details.",
+      "exploit": "An attacker can craft malformed queries to trigger detailed error messages that reveal database schema, version info, and internal structure, aiding further attacks.",
+      "fix": "Log detailed errors server-side and show only generic error messages to the user. E.g., `print('A database error occurred. Please check your query.')` while logging the full error to a secure log file."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "58-59",
+      "description": "Catching broad `Exception` and printing its message can leak sensitive internal information including file paths, stack details, and system configuration.",
+      "exploit": "Unexpected exceptions may contain sensitive details about the system internals that could be useful for reconnaissance.",
+      "fix": "Log the full exception to a secure log file and display only a generic error message to the user."
+    },
+    {
+      "id": 5,
+      "severity": "medium",
+      "type": "security",
+      "line": "25",
+      "description": "Database connection error details (including potentially the hostname, port, database name, and partial credential info from the psycopg2 error) are printed to stdout.",
+      "exploit": "If output is visible to an attacker (e.g., in logs, web response), connection error messages can reveal infrastructure details.",
+      "fix": "Log errors securely and show only a generic connection failure message."
+    },
+    {
+      "id": 6,
+      "severity": "medium",
+      "type": "security",
+      "line": "15-21",
+      "description": "No SSL/TLS configuration for the database connection. The connection defaults to unencrypted, meaning credentials and query data are transmitted in plaintext over the network.",
+      "exploit": "An attacker performing network sniffing (MITM) on the path between the application and the database can capture credentials and all query data/results in plaintext.",
+      "fix": "Add `sslmode='require'` (or `'verify-full'` for production) to the `psycopg2.connect()` call, and configure appropriate SSL certificates."
+    },
+    {
+      "id": 10,
+      "severity": "low",
+      "type": "logic",
+      "line": "49",
+      "description": "If the user submits multiple SQL statements separated by semicolons (e.g., `SELECT 1; DROP TABLE users;`), psycopg2 will execute them all. This bypasses any single-statement assumptions.",
+      "exploit": "Even if a hypothetical SELECT-only filter were added, an attacker could append destructive statements after a semicolon.",
+      "fix": "Explicitly disallow multiple statements by checking for semicolons in non-terminal positions, or use a SQL parser to ensure only a single statement is provided."
+    },
+    {
+      "id": 11,
+      "severity": "info",
+      "type": "security",
+      "line": "84-86",
+      "description": "The comment on lines 99-100 acknowledges that dangerous keywords like DROP TABLE should be restricted but no such restriction is implemented. This is a known-but-unaddressed risk.",
+      "exploit": "The acknowledged risk is fully exploitable in the current state.",
+      "fix": "Implement the suggested restrictions rather than leaving them as comments."
+    }
+  ],
+  "referee_verdict": {
+    "raw": "```json\n{\n  \"final_issues\": [\n    {\n      \"issue_id\": 1,\n      \"final_verdict\": \"rejected\",\n      \"final_severity\": \"info\",\n      \"explanation\": \"This application is explicitly designed as a CLI SQL client ('PostgreSQL Query Runner'). The user provides their own database credentials via environment variables and interacts with the database directly. Executing arbitrary SQL is the intended functionality of a SQL client, not a vulnerability. Any access control should be enforced by the database itself via the provided credentials.\"\n    },\n    {\n      \"issue_id\": 2,\n      \"final_verdict\": \"rejected\",\n      \"final_severity\": \"info\",\n      \"explanation\": \"As",
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "confirmed",
+        "final_severity": "critical",
+        "explanation": "Fallback from adversary stage: Arbitrary SQL execution with no authorization or restriction. The tool accepts any SQL statement from the user and executes it directly against the database, including DROP TABLE, DROP DATABASE, GRANT, CREATE USER, DELETE FROM, TRUNCATE, etc. There is no allowlist, no role-based access control, and no query restriction whatsoever."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Fallback from adversary stage: Database error messages are printed directly to the user, potentially leaking sensitive information such as table structures, column names, internal paths, PostgreSQL version, and configuration details."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Fallback from adversary stage: Catching broad `Exception` and printing its message can leak sensitive internal information including file paths, stack details, and system configuration."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Fallback from adversary stage: Database connection error details (including potentially the hostname, port, database name, and partial credential info from the psycopg2 error) are printed to stdout."
+      },
+      {
+        "issue_id": 6,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Fallback from adversary stage: No SSL/TLS configuration for the database connection. The connection defaults to unencrypted, meaning credentials and query data are transmitted in plaintext over the network."
+      },
+      {
+        "issue_id": 10,
+        "final_verdict": "confirmed",
+        "final_severity": "low",
+        "explanation": "Fallback from adversary stage: If the user submits multiple SQL statements separated by semicolons (e.g., `SELECT 1; DROP TABLE users;`), psycopg2 will execute them all. This bypasses any single-statement assumptions."
+      },
+      {
+        "issue_id": 11,
+        "final_verdict": "confirmed",
+        "final_severity": "info",
+        "explanation": "Fallback from adversary stage: The comment on lines 99-100 acknowledges that dangerous keywords like DROP TABLE should be restricted but no such restriction is implemented. This is a known-but-unaddressed risk."
+      }
+    ],
+    "summary": {
+      "total_found": 11,
+      "confirmed": 7,
+      "rejected": 4,
+      "modified": 0,
+      "finder_accuracy": 0.64,
+      "adversary_accuracy": 0.0,
+      "referee_fallback": true
+    },
+    "overall_code_quality": "critical"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

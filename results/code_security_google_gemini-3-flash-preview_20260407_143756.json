@@ -1,0 +1,227 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3-flash-preview",
+  "finder": "google/gemini-3-flash-preview",
+  "adversary": "google/gemini-3-flash-preview",
+  "referee": "google/gemini-3-flash-preview",
+  "generated_code": "import os\nimport sys\nimport psycopg2\nfrom psycopg2 import sql, Error\nfrom typing import Optional, List, Any\n\ndef get_db_connection():\n    \"\"\"\n    Establishes a connection to the PostgreSQL database using environment variables.\n    Best practice: Use environment variables instead of hardcoding credentials.\n    \"\"\"\n    try:\n        # Ensure these environment variables are set in your shell/system\n        conn = psycopg2.connect(\n            host=os.getenv(\"DB_HOST\", \"localhost\"),\n            database=os.getenv(\"DB_NAME\"),\n            user=os.getenv(\"DB_USER\"),\n            password=os.getenv(\"DB_PASSWORD\"),\n            port=os.getenv(\"DB_PORT\", \"5432\"),\n            connect_timeout=5\n        )\n        return conn\n    except Error as e:\n        print(f\"Error: Unable to connect to the database.\\n{e}\")\n        return None\n\ndef execute_query(query: str, params: Optional[tuple] = None) -> None:\n    \"\"\"\n    Executes a SQL query safely. \n    Uses parameterized queries to prevent SQL injection.\n    \"\"\"\n    if not query.strip():\n        print(\"Error: Empty query provided.\")\n        return\n\n    conn = get_db_connection()\n    if not conn:\n        return\n\n    cursor = None\n    try:\n        # Using a context manager for the cursor ensures it closes automatically\n        with conn.cursor() as cursor:\n            # Execute the query with optional parameters for safety\n            cursor.execute(query, params)\n\n            # If the query returns data (SELECT), fetch and display it\n            if cursor.description:\n                colnames = [desc[0] for desc in cursor.description]\n                print(f\"Columns: {colnames}\")\n                rows = cursor.fetchall()\n                for row in rows:\n                    print(row)\n            else:\n                # For INSERT, UPDATE, DELETE, etc.\n                conn.commit()\n                print(f\"Query executed successfully. Rows affected: {cursor.rowcount}\")\n\n    except psycopg2.DatabaseError as e:\n        # Rollback the transaction on error\n        conn.rollback()\n        print(f\"Database error: {e}\")\n    except Exception as e:\n        print(f\"Unexpected error: {e}\")\n    finally:\n        if conn:\n            conn.close()\n\ndef main():\n    \"\"\"\n    Entry point for the script. \n    Accepts user input and handles the execution loop.\n    \"\"\"\n    print(\"--- PostgreSQL Query Runner ---\")\n    print(\"Type 'exit' or 'quit' to stop.\")\n\n    while True:\n        try:\n            user_query = input(\"\\npsql> \").strip()\n            \n            if user_query.lower() in [\"exit\", \"quit\"]:\n                break\n            \n            if not user_query:\n                continue\n\n            # Security Note: \n            # This script executes raw SQL provided by the user.\n            # In a production environment, you should strictly limit the \n            # database user's permissions (Least Privilege Principle) \n            # to prevent destructive actions like 'DROP TABLE'.\n            execute_query(user_query)\n\n        except KeyboardInterrupt:\n            print(\"\\nExiting...\")\n            break\n\nif __name__ == \"__main__\":\n    # Check if basic environment variables are set\n    required_vars = [\"DB_NAME\", \"DB_USER\", \"DB_PASSWORD\"]\n    missing = [var for var in required_vars if not os.getenv(var)]\n    \n    if missing:\n        print(f\"Error: Missing environment variables: {', '.join(missing)}\")\n        sys.exit(1)\n\n    main()",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "95",
+      "description": "Arbitrary SQL Execution (SQL Injection by Design)",
+      "exploit": "An attacker or unauthorized user can execute any SQL command allowed by the DB user's permissions. They could run 'DROP TABLE users;', 'SELECT * FROM secrets;', or use 'COPY' commands to read/write local system files depending on PostgreSQL configuration.",
+      "fix": "Do not allow users to input raw SQL. Use predefined functions with strictly typed parameters and Object-Relational Mapping (ORM) or hardcoded prepared statements where the user only provides data, not logic."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "71",
+      "description": "Sensitive Information Leakage via Error Messages",
+      "exploit": "The script prints the raw exception object '{e}' to the console. In a database context, this often includes table names, column names, constraint names, or even snippets of the query that failed, which helps an attacker map the database schema.",
+      "fix": "Log the full error to a secure file and show the user a generic 'An error occurred' message."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "performance",
+      "line": "13",
+      "description": "Missing Connection Pooling",
+      "exploit": "The script opens and closes a new TCP connection and database session for every single query executed in the loop. This is extremely inefficient and can be used to perform a Denial of Service (DoS) on the database by exhausting available connection slots (max_connections).",
+      "fix": "Use a connection pool (like psycopg2.pool.SimpleConnectionPool) and maintain a single persistent connection or a pool of connections throughout the script's lifecycle."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "13",
+      "description": "Lack of SSL/TLS Enforcement",
+      "exploit": "The connection does not specify 'sslmode'. By default, it may fallback to an unencrypted connection. An attacker on the same network could sniff the database traffic, including sensitive data returned in queries.",
+      "fix": "Set 'sslmode=verify-full' or 'require' in the connection parameters and provide the necessary CA certificates."
+    },
+    {
+      "id": 5,
+      "severity": "low",
+      "type": "logic",
+      "line": "58",
+      "description": "Incomplete Transaction Handling",
+      "exploit": "The script calls 'conn.commit()' only if 'cursor.description' is None. If a user executes a DML statement (like UPDATE) that uses a 'RETURNING' clause, 'cursor.description' will be populated, and the script will skip the commit, causing the changes to be lost when the connection closes.",
+      "fix": "Check the query type or always commit/rollback explicitly based on the success of the execution block, regardless of whether data was returned."
+    },
+    {
+      "id": 6,
+      "severity": "medium",
+      "type": "security",
+      "line": "16",
+      "description": "Insecure Default Host",
+      "exploit": "The script defaults to 'localhost'. If the script is run in a shared environment or container where 'localhost' points to a service the user shouldn't access, it might lead to SSRF-like behavior if the environment variables are manipulated.",
+      "fix": "Do not provide defaults for sensitive infrastructure addresses; require them to be explicitly configured."
+    },
+    {
+      "id": 7,
+      "severity": "low",
+      "type": "performance",
+      "line": "53",
+      "description": "Unbounded Data Fetching (Memory Exhaustion)",
+      "exploit": "The script calls 'cursor.fetchall()'. If a user executes a query that returns millions of rows, the Python process will attempt to load the entire result set into RAM, likely leading to a crash (OOM) or system instability.",
+      "fix": "Use 'cursor.fetchmany(size=100)' in a loop or a server-side cursor to process large results in chunks."
+    },
+    {
+      "id": 8,
+      "severity": "high",
+      "type": "security",
+      "line": "13",
+      "description": "Hardcoded Credentials via Environment Variables (OS Level Leakage)",
+      "exploit": "While better than hardcoding in strings, environment variables are often visible to all processes owned by the user (via /proc/self/environ on Linux) and are frequently logged in CI/CD pipelines or error monitoring tools.",
+      "fix": "Use a secret manager (AWS Secrets Manager, HashiCorp Vault) or a configuration file with restricted filesystem permissions (chmod 600)."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "killed",
+      "reasoning": "This is a 'Query Runner' utility script, explicitly designed to be a CLI client (like psql). Warning that a tool designed to run SQL can run SQL is circular logic. The code even contains a 'Security Note' acknowledging this. It is not a vulnerability in a tool whose primary purpose is arbitrary execution for an authenticated user.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "downgraded",
+      "reasoning": "This is a local CLI tool, not a web application. Printing errors to the console of the user who is already authorized to run raw SQL is not 'leakage'—it is necessary debugging feedback for the operator. It would only be a risk if this were a backend service exposing errors to remote unprivileged users.",
+      "revised_severity": "info"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "killed",
+      "reasoning": "Connection pooling is for high-concurrency web servers. This is a synchronous, single-user CLI loop where one query is typed at human speed. Opening a connection per query is standard for such scripts; the overhead is negligible and cannot 'DoS' a database unless the user can type 100 queries per second.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "killed",
+      "reasoning": "Psycopg2's default behavior and PostgreSQL's server-side configuration typically negotiate the highest available security. Furthermore, for a local admin tool (defaulting to localhost), SSL is often unnecessary. Enforcing 'verify-full' by default would break the tool for most users without complex certificate setups.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "valid",
+      "reasoning": "This is a legitimate logic bug. If a user runs 'UPDATE ... RETURNING id', the script will fetch the data but fail to commit the transaction because cursor.description is present. The data changes would be rolled back on connection close, leading to silent data loss.",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 6,
+      "verdict": "killed",
+      "reasoning": "Defaulting to 'localhost' is standard industry practice for development tools. The claim of SSRF via environment variable manipulation is invalid; if an attacker can modify the environment variables of the process, they already have full control over the execution context (Local Privilege Escalation), making the 'default' irrelevant.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 7,
+      "verdict": "valid",
+      "reasoning": "Even in a CLI tool, fetchall() on a massive table will crash the local Python process. While it's a 'self-DoS', it's a poor implementation for a tool meant to interface with databases of unknown size.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 8,
+      "verdict": "killed",
+      "reasoning": "Environment variables are the standard, 12-factor-app-compliant way to pass credentials. Suggesting they are 'insecure' because they exist in memory is an extreme take that would invalidate almost every modern cloud-native deployment. Moving to a Secret Manager for a simple CLI script is over-engineering.",
+      "revised_severity": "none"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "71",
+      "description": "Sensitive Information Leakage via Error Messages",
+      "exploit": "The script prints the raw exception object '{e}' to the console. In a database context, this often includes table names, column names, constraint names, or even snippets of the query that failed, which helps an attacker map the database schema.",
+      "fix": "Log the full error to a secure file and show the user a generic 'An error occurred' message."
+    },
+    {
+      "id": 5,
+      "severity": "low",
+      "type": "logic",
+      "line": "58",
+      "description": "Incomplete Transaction Handling",
+      "exploit": "The script calls 'conn.commit()' only if 'cursor.description' is None. If a user executes a DML statement (like UPDATE) that uses a 'RETURNING' clause, 'cursor.description' will be populated, and the script will skip the commit, causing the changes to be lost when the connection closes.",
+      "fix": "Check the query type or always commit/rollback explicitly based on the success of the execution block, regardless of whether data was returned."
+    },
+    {
+      "id": 7,
+      "severity": "low",
+      "type": "performance",
+      "line": "53",
+      "description": "Unbounded Data Fetching (Memory Exhaustion)",
+      "exploit": "The script calls 'cursor.fetchall()'. If a user executes a query that returns millions of rows, the Python process will attempt to load the entire result set into RAM, likely leading to a crash (OOM) or system instability.",
+      "fix": "Use 'cursor.fetchmany(size=100)' in a loop or a server-side cursor to process large results in chunks."
+    }
+  ],
+  "referee_verdict": {
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "The Adversary is correct. This is a 'PostgreSQL Query Runner' CLI utility. Flagging a SQL client for executing SQL is a 'functional' observation, not a vulnerability. The script includes a security note regarding least privilege, which is the appropriate mitigation for this use case."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "modified",
+        "final_severity": "info",
+        "explanation": "In a CLI tool intended for developers/DBAs, verbose error messages are a feature, not a bug. The user already has the authority to execute arbitrary SQL; knowing why a query failed is necessary for the tool's operation. It does not constitute 'leakage' to an unauthorized party."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "Connection pooling is irrelevant for a synchronous, single-user CLI script where queries are entered manually. The overhead of a single connection per query at human typing speed is negligible and does not pose a DoS risk to the database."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "While SSL is important, psycopg2 defaults to 'prefer', which attempts SSL first. Enforcing 'verify-full' by default in a generic utility script would make it unusable for the majority of users who do not have local CA certificates configured. This is a configuration preference, not a code vulnerability."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "This is a valid logic bug. Using 'cursor.description' to decide whether to commit is flawed. PostgreSQL allows DML statements (INSERT/UPDATE/DELETE) to return data via the 'RETURNING' clause. In such cases, the script would fetch the data but fail to commit, leading to silent data loss."
+      },
+      {
+        "issue_id": 6,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "Defaulting to localhost is standard. The Adversary is correct that if an attacker can manipulate environment variables, the system is already compromised (LPE). This does not facilitate SSRF in any meaningful way."
+      },
+      {
+        "issue_id": 7,
+        "final_verdict": "confirmed",
+        "final_severity": "low",
+        "explanation": "Using fetchall() without limits is a poor practice. While the impact is limited to the user's own machine (OOM crash), a robust database tool should handle large result sets gracefully using iterators or fetchmany()."
+      },
+      {
+        "issue_id": 8,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "Environment variables are the industry standard for credential injection in 12-factor apps. While they have risks, calling them 'Hardcoded' or 'High' severity is incorrect. For a CLI tool, this is the expected and most portable behavior."
+      }
+    ],
+    "summary": {
+      "total_found": 8,
+      "confirmed": 2,
+      "rejected": 5,
+      "modified": 1,
+      "finder_accuracy": 0.25,
+      "adversary_accuracy": 0.875
+    },
+    "overall_code_quality": "mostly_secure"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

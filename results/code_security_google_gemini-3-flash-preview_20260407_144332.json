@@ -1,0 +1,218 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3-flash-preview",
+  "finder": "google/gemini-3-flash-preview",
+  "adversary": "google/gemini-3-flash-preview",
+  "referee": "google/gemini-3-flash-preview",
+  "generated_code": "import os\nimport sys\nimport psycopg2\nfrom psycopg2 import Error, extras\nfrom typing import Optional, List, Any\n\ndef get_db_connection():\n    \"\"\"\n    Establishes a connection to the PostgreSQL database using environment variables.\n    Returns a connection object or None if connection fails.\n    \"\"\"\n    # It is a security best practice to use environment variables for credentials\n    # rather than hardcoding them in the source code.\n    db_host = os.getenv(\"DB_HOST\", \"localhost\")\n    db_name = os.getenv(\"DB_NAME\")\n    db_user = os.getenv(\"DB_USER\")\n    db_pass = os.getenv(\"DB_PASS\")\n    db_port = os.getenv(\"DB_PORT\", \"5432\")\n\n    if not all([db_name, db_user, db_pass]):\n        print(\"Error: Database environment variables (DB_NAME, DB_USER, DB_PASS) are not set.\")\n        return None\n\n    try:\n        conn = psycopg2.connect(\n            host=db_host,\n            database=db_name,\n            user=db_user,\n            password=db_pass,\n            port=db_port,\n            # Set a connection timeout for production stability\n            connect_timeout=5\n        )\n        # Set autocommit to False to manage transactions manually if needed, \n        # though psycopg2 defaults to False.\n        conn.autocommit = False\n        return conn\n    except Error as e:\n        print(f\"Error connecting to PostgreSQL: {e}\")\n        return None\n\ndef run_user_query(query: str):\n    \"\"\"\n    Executes a user-provided SQL query and prints the results.\n    \n    WARNING: Executing raw user-provided SQL is inherently dangerous and \n    susceptible to SQL injection. This script assumes the 'user' is a \n    trusted administrator or the environment is strictly controlled.\n    \"\"\"\n    if not query.strip():\n        print(\"Error: Query string is empty.\")\n        return\n\n    conn = get_db_connection()\n    if not conn:\n        return\n\n    cur = None\n    try:\n        # Use DictCursor to allow accessing columns by name\n        cur = conn.cursor(cursor_factory=extras.DictCursor)\n        \n        print(f\"Executing: {query}\")\n        cur.execute(query)\n\n        # Check if the query returns rows (e.g., SELECT)\n        if cur.description:\n            rows = cur.fetchall()\n            if not rows:\n                print(\"Query executed successfully. No rows returned.\")\n            else:\n                # Print column headers\n                colnames = [desc[0] for desc in cur.description]\n                print(\" | \".join(colnames))\n                print(\"-\" * (len(\" | \".join(colnames))))\n                \n                # Print data rows\n                for row in rows:\n                    print(\" | \".join(str(val) for val in row))\n        else:\n            # For non-SELECT queries (INSERT, UPDATE, DELETE, etc.)\n            conn.commit()\n            print(f\"Query executed successfully. Rows affected: {cur.rowcount}\")\n\n    except Error as e:\n        # Rollback the transaction on error to keep the connection state clean\n        if conn:\n            conn.rollback()\n        print(f\"Database error: {e}\")\n    except Exception as e:\n        print(f\"An unexpected error occurred: {e}\")\n    finally:\n        # Ensure resources are released\n        if cur:\n            cur.close()\n        if conn:\n            conn.close()\n\nif __name__ == \"__main__\":\n    \"\"\"\n    Entry point for the script. \n    Usage: python script.py \"SELECT * FROM users LIMIT 5;\"\n    \"\"\"\n    # Basic input validation for command line arguments\n    if len(sys.argv) < 2:\n        print(\"Usage: python script.py \\\"<SQL_QUERY>\\\"\")\n        print(\"Example: python script.py \\\"SELECT version();\\\"\")\n        sys.exit(1)\n\n    # Combine arguments into a single string if the user didn't wrap the query in quotes\n    user_sql = \" \".join(sys.argv[1:])\n    \n    run_user_query(user_sql)",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "62",
+      "description": "Direct execution of unsanitized user-provided SQL queries. While the docstring mentions this risk, the implementation provides no safeguards against malicious SQL commands (DROP TABLE, GRANT ALL, etc.).",
+      "exploit": "An attacker can provide a query like 'DROP TABLE users;--' or 'UPDATE users SET admin = TRUE WHERE username = 'attacker';' to compromise the entire database.",
+      "fix": "Never execute raw strings from users. Use parameterized queries for data inputs and implement a whitelist of allowed commands or restrict the database user's permissions to the absolute minimum required (Principle of Least Privilege)."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "28",
+      "description": "Missing SSL/TLS configuration for database connection. By default, the connection may be unencrypted or not verify the server's identity.",
+      "exploit": "A Man-in-the-Middle (MitM) attacker on the network can sniff the database credentials and all data transmitted between the script and the PostgreSQL server.",
+      "fix": "Add 'sslmode' parameters to the connect call, e.g., sslmode='verify-full' and provide the 'sslrootcert' path to ensure encrypted and authenticated communication."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "security",
+      "line": "40, 89, 92",
+      "description": "Information exposure through overly descriptive error messages. Printing the raw database error ('e') can leak schema names, table structures, and internal server logic.",
+      "exploit": "An attacker can intentionally trigger errors (e.g., syntax errors or constraint violations) to map the database structure and identify further vulnerabilities.",
+      "fix": "Log detailed errors to a secure file and show only a generic 'Internal Database Error' message to the user."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "performance",
+      "line": "66",
+      "description": "Potential Denial of Service (DoS) via memory exhaustion. Using 'cur.fetchall()' on an unconstrained user query will load the entire result set into RAM.",
+      "exploit": "An attacker can execute a query that returns millions of rows (e.g., 'SELECT * FROM large_table CROSS JOIN large_table'), causing the script to crash with an Out-of-Memory (OOM) error and potentially impacting the host system.",
+      "fix": "Use 'cur.fetchmany(size)' in a loop or a server-side cursor to process rows in manageable chunks."
+    },
+    {
+      "id": 5,
+      "severity": "low",
+      "type": "security",
+      "line": "111",
+      "description": "Insecure argument handling. Joining 'sys.argv' with spaces can lead to unexpected query construction if the shell environment isn't properly escaped.",
+      "exploit": "Complex SQL queries containing shell meta-characters might be mangled, leading to execution of unintended commands if the script were ever called by another automated process.",
+      "fix": "Require the SQL query to be a single argument (sys.argv[1]) rather than joining the list, and use strict input validation."
+    },
+    {
+      "id": 6,
+      "severity": "medium",
+      "type": "logic",
+      "line": "79",
+      "description": "Inconsistent transaction management. The script manually commits for non-SELECT queries but relies on the connection closing to end transactions for SELECT queries.",
+      "exploit": "In PostgreSQL, even SELECT statements start a transaction block. If the connection were pooled or reused instead of closed, this could lead to 'idle in transaction' states, holding locks and preventing vacuuming.",
+      "fix": "Always use a 'with' statement for the connection and cursor, or explicitly commit/rollback at the end of every logical block regardless of query type."
+    },
+    {
+      "id": 7,
+      "severity": "low",
+      "type": "security",
+      "line": "14-17",
+      "description": "Environment variables used for secrets (DB_PASS) can be leaked via /proc/pid/environ or to child processes.",
+      "exploit": "On a multi-user system, another user might be able to see the database password by inspecting the environment of the running process.",
+      "fix": "Use a dedicated secrets manager or a protected configuration file with strict filesystem permissions (e.g., chmod 600)."
+    },
+    {
+      "id": 8,
+      "severity": "info",
+      "type": "security",
+      "line": "75",
+      "description": "Potential for terminal injection. Printing raw data from the database directly to the console.",
+      "exploit": "If the database contains malicious ANSI escape sequences, viewing the output in a terminal could trigger terminal vulnerabilities or hide/manipulate the displayed text.",
+      "fix": "Sanitize or encode database output (e.g., using repr() or a library that handles control characters) before printing to the console."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "downgraded",
+      "reasoning": "The script is explicitly designed as a CLI SQL runner (similar to `psql -c`). The docstring explicitly warns that the user is assumed to be a trusted administrator. While raw SQL execution is dangerous in a web application context, in a CLI utility, this is the core functionality. An 'attacker' here is the authorized user running the script on their own infrastructure.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "killed",
+      "reasoning": "Psycopg2 defaults to 'sslmode=prefer', meaning it will attempt an encrypted connection by default if the server supports it. Furthermore, SSL configuration is often managed via environment variables (PGSSLMODE, etc.) or server-side enforcement rather than being hardcoded in the client script, which would limit flexibility.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "killed",
+      "reasoning": "This is a CLI tool for administrators. Providing raw database errors is a requirement for debugging SQL syntax and schema issues. Masking these errors would render a SQL execution utility unusable for its intended audience.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "downgraded",
+      "reasoning": "While fetchall() can cause OOM on massive datasets, this is a local CLI tool, not a multi-tenant service. If a user runs a query that returns 10GB of data to their own terminal, they crash their own process. This is a performance limitation, not a security vulnerability.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "killed",
+      "reasoning": "Joining sys.argv is a common pattern to allow users to type queries without mandatory quotes. Since the script's entire purpose is to execute the resulting string as SQL, 'unexpected query construction' is irrelevant—the user is responsible for the string they provide.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 6,
+      "verdict": "killed",
+      "reasoning": "In Psycopg2, if a connection is closed without a commit, the transaction is automatically rolled back. Since this script terminates and closes the connection immediately after execution, there is no risk of 'idle in transaction' states or long-term lock contention.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 7,
+      "verdict": "killed",
+      "reasoning": "Environment variables are the industry standard for 12-factor apps and containerized environments. Access to /proc/pid/environ is restricted by the OS to the process owner and root. If an attacker already has root or user-level access to the environment, the system is already compromised.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 8,
+      "verdict": "killed",
+      "reasoning": "Terminal injection via ANSI escapes is a theoretical concern for logs or web consoles, but for a database administrator tool, the risk is negligible compared to the fact that the user already has full SQL access to the data they are viewing.",
+      "revised_severity": "none"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "62",
+      "description": "Direct execution of unsanitized user-provided SQL queries. While the docstring mentions this risk, the implementation provides no safeguards against malicious SQL commands (DROP TABLE, GRANT ALL, etc.).",
+      "exploit": "An attacker can provide a query like 'DROP TABLE users;--' or 'UPDATE users SET admin = TRUE WHERE username = 'attacker';' to compromise the entire database.",
+      "fix": "Never execute raw strings from users. Use parameterized queries for data inputs and implement a whitelist of allowed commands or restrict the database user's permissions to the absolute minimum required (Principle of Least Privilege)."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "performance",
+      "line": "66",
+      "description": "Potential Denial of Service (DoS) via memory exhaustion. Using 'cur.fetchall()' on an unconstrained user query will load the entire result set into RAM.",
+      "exploit": "An attacker can execute a query that returns millions of rows (e.g., 'SELECT * FROM large_table CROSS JOIN large_table'), causing the script to crash with an Out-of-Memory (OOM) error and potentially impacting the host system.",
+      "fix": "Use 'cur.fetchmany(size)' in a loop or a server-side cursor to process rows in manageable chunks."
+    }
+  ],
+  "referee_verdict": {
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "modified",
+        "final_severity": "low",
+        "explanation": "While the script executes raw SQL, this is the intended functionality of a CLI SQL runner. The Finder is correct that this is dangerous, but the Adversary is correct that in the context of an administrative tool, this is a feature, not a bug. The severity is lowered because the 'attacker' is the authorized user. However, it remains 'Low' because the script could be misused if integrated into other automated systems without realizing it lacks internal sanitization."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "rejected",
+        "final_severity": "high",
+        "explanation": "Psycopg2 defaults to 'sslmode=prefer', which attempts encryption. Furthermore, SSL configuration is typically handled via standard PostgreSQL environment variables (like PGSSLMODE) or server-side configuration. Hardcoding SSL requirements in the script reduces portability across different environments (dev vs prod)."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "rejected",
+        "final_severity": "medium",
+        "explanation": "For a CLI tool intended for database administrators, raw error messages are essential for debugging SQL syntax and schema issues. Masking these errors would make the tool significantly less useful for its target audience."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "modified",
+        "final_severity": "low",
+        "explanation": "Using fetchall() on unconstrained queries is a legitimate stability concern as it can lead to Out-Of-Memory (OOM) errors. However, in a local CLI context, this is a performance/reliability issue rather than a high-severity security vulnerability. It affects only the local process initiated by the user."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "rejected",
+        "final_severity": "low",
+        "explanation": "Joining sys.argv is a common convenience pattern for CLI tools to allow users to input queries without strict quoting. While it can lead to mangled strings if the user provides complex shell characters, it does not introduce a security vulnerability beyond the inherent risk of the tool's purpose."
+      },
+      {
+        "issue_id": 6,
+        "final_verdict": "rejected",
+        "final_severity": "medium",
+        "explanation": "In Psycopg2, closing a connection without an explicit commit results in an automatic rollback of any open transaction. Since the script closes the connection and exits immediately after execution, there is no risk of 'idle in transaction' states or resource leaks."
+      },
+      {
+        "issue_id": 7,
+        "final_verdict": "rejected",
+        "final_severity": "low",
+        "explanation": "Environment variables are a standard and widely accepted method for passing secrets in containerized and 12-factor applications. Access to a process's environment via /proc is restricted to the owner and root, at which point the system is already compromised."
+      },
+      {
+        "issue_id": 8,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "Terminal injection via ANSI escapes is a theoretical risk when displaying untrusted data. However, for a tool designed to allow an administrator to view database contents, this risk is negligible and almost never mitigated in similar standard tools like psql."
+      }
+    ],
+    "summary": {
+      "total_found": 8,
+      "confirmed": 0,
+      "rejected": 6,
+      "modified": 2,
+      "finder_accuracy": 0.25,
+      "adversary_accuracy": 1.0
+    },
+    "overall_code_quality": "mostly_secure"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

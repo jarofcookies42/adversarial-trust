@@ -1,0 +1,321 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3-flash-preview",
+  "finder": "anthropic/claude-opus-4-6",
+  "adversary": "google/gemini-3.1-pro-preview",
+  "referee": "google/gemini-3.1-pro-preview",
+  "generated_code": "import os\nimport sys\nimport psycopg2\nfrom psycopg2 import Error, extras\nfrom typing import Optional, List, Dict, Any, Union\n\n\nclass DatabaseManager:\n    \"\"\"Handles secure connections and execution of SQL queries against PostgreSQL.\"\"\"\n\n    def __init__(self):\n        # Load configuration from environment variables for security\n        self.host = os.getenv(\"DB_HOST\", \"localhost\")\n        self.database = os.getenv(\"DB_NAME\")\n        self.user = os.getenv(\"DB_USER\")\n        self.password = os.getenv(\"DB_PASS\")\n        self.port = os.getenv(\"DB_PORT\", \"5432\")\n        self.connection = None\n\n        # Basic validation of required credentials\n        if not all([self.database, self.user, self.password]):\n            print(\"Error: Database credentials (DB_NAME, DB_USER, DB_PASS) must be set in environment variables.\")\n            sys.exit(1)\n\n    def connect(self):\n        \"\"\"Establishes a connection to the PostgreSQL database.\"\"\"\n        try:\n            self.connection = psycopg2.connect(\n                host=self.host,\n                database=self.database,\n                user=self.user,\n                password=self.password,\n                port=self.port,\n                connect_timeout=10\n            )\n            # Ensure changes are committed automatically if not using explicit transactions\n            self.connection.autocommit = False\n        except Error as e:\n            print(f\"Error: Unable to connect to the database. {e}\")\n            sys.exit(1)\n\n    def execute_query(self, query: str, params: Optional[Union[tuple, dict]] = None) -> Optional[List[Dict[str, Any]]]:\n        \"\"\"\n        Executes a SQL query and returns results if applicable.\n        \n        Args:\n            query: The SQL query string to execute.\n            params: Optional parameters for the query to prevent SQL injection.\n        \"\"\"\n        if not query.strip():\n            print(\"Warning: Received an empty query.\")\n            return None\n\n        cursor = None\n        try:\n            # Use RealDictCursor to return results as dictionaries (column_name: value)\n            cursor = self.connection.cursor(cursor_factory=extras.RealDictCursor)\n            \n            # Execute the query\n            cursor.execute(query, params)\n\n            # Determine if the query returns data (e.g., SELECT, RETURNING)\n            result = None\n            if cursor.description:\n                result = cursor.fetchall()\n\n            # Commit the transaction\n            self.connection.commit()\n            print(f\"Successfully executed query. Rows affected: {cursor.rowcount}\")\n            return result\n\n        except Error as e:\n            # Rollback in case of error to maintain database integrity\n            if self.connection:\n                self.connection.rollback()\n            print(f\"Database Error: {e}\")\n            return None\n        except Exception as e:\n            if self.connection:\n                self.connection.rollback()\n            print(f\"Unexpected Error: {e}\")\n            return None\n        finally:\n            if cursor:\n                cursor.close()\n\n    def close(self):\n        \"\"\"Closes the database connection.\"\"\"\n        if self.connection:\n            self.connection.close()\n            print(\"Database connection closed.\")\n\n\ndef main():\n    \"\"\"Main entry point for the script.\"\"\"\n    db = DatabaseManager()\n    db.connect()\n\n    print(\"--- PostgreSQL Query Runner ---\")\n    print(\"Type 'exit' or 'quit' to stop.\")\n\n    try:\n        while True:\n            # Input validation\n            user_input = input(\"\\nEnter SQL query: \").strip()\n            \n            if user_input.lower() in ['exit', 'quit']:\n                break\n            \n            if not user_input:\n                continue\n\n            # Execute the query provided by the user\n            # Note: In a production web environment, never allow raw SQL from untrusted users.\n            # This script assumes the user is an authorized administrator.\n            results = db.execute_query(user_input)\n\n            # Display results if any\n            if results:\n                import json\n                # Pretty print the list of dictionaries\n                print(json.dumps(results, indent=2, default=str))\n            elif results == []:\n                print(\"Query returned 0 rows.\")\n\n    except KeyboardInterrupt:\n        print(\"\\nExecution interrupted by user.\")\n    finally:\n        db.close()\n\n\nif __name__ == \"__main__\":\n    # Example usage:\n    # export DB_HOST='localhost'\n    # export DB_NAME='my_db'\n    # export DB_USER='postgres'\n    # export DB_PASS='secret'\n    # python script.py\n    main()",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "99-108",
+      "description": "Raw SQL execution from user input with no parameterization or restrictions. The `main()` function takes arbitrary SQL from `input()` and passes it directly to `execute_query()` without any parameters. While the comment acknowledges this, there are zero guardrails — any user who can run this script can DROP tables, exfiltrate data, create users, execute `COPY` to read/write files on the server filesystem, etc.",
+      "exploit": "A user (or attacker who gains shell access) types `DROP TABLE users;` or `COPY (SELECT * FROM pg_shadow) TO '/tmp/hashes.txt';` to destroy data or escalate privileges.",
+      "fix": "At minimum, restrict to read-only queries (SET default_transaction_read_only = on), use a least-privilege database role, implement a query allowlist, or remove the interactive raw SQL feature entirely."
+    },
+    {
+      "id": 2,
+      "severity": "medium",
+      "type": "security",
+      "line": "22",
+      "description": "Credential validation failure causes `sys.exit(1)` but first prints a message to stdout that confirms which environment variables are expected. More critically, the credentials are stored as plain instance attributes on the object, making them accessible via introspection, heap dumps, or debugging tools.",
+      "exploit": "An attacker with access to the process memory or a debugger can read `db.password` directly from the object attributes.",
+      "fix": "Consider using a secrets manager (e.g., AWS Secrets Manager, HashiCorp Vault) instead of plain environment variables. Clear password from memory after establishing the connection if possible."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "security",
+      "line": "37-38",
+      "description": "Database connection error message includes the full exception `{e}`, which may leak sensitive information such as the hostname, port, database name, username, or partial connection string details to stdout/logs.",
+      "exploit": "If stdout/stderr is captured in logs accessible to unauthorized parties, connection details are exposed.",
+      "fix": "Log a generic error message to the user and log the detailed exception to a secured, access-controlled log file."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "70-71",
+      "description": "The database error message `print(f\"Database Error: {e}\")` can leak internal schema information, table names, column names, constraint names, and query details from PostgreSQL error messages.",
+      "exploit": "An attacker crafting malicious queries can use verbose error messages to enumerate the database schema (error-based enumeration).",
+      "fix": "Log detailed errors to a secure log file and return only a generic error message to the user."
+    },
+    {
+      "id": 5,
+      "severity": "medium",
+      "type": "security",
+      "line": "75",
+      "description": "Catching broad `Exception` and printing `f\"Unexpected Error: {e}\"` can leak stack trace information or internal details for unexpected error types.",
+      "exploit": "Unexpected exceptions (e.g., OS errors, memory errors) could reveal filesystem paths, internal state, or other sensitive information.",
+      "fix": "Log detailed error information securely and present only a sanitized message."
+    },
+    {
+      "id": 6,
+      "severity": "medium",
+      "type": "logic",
+      "line": "55-56",
+      "description": "`execute_query` accesses `self.connection` without checking if it is `None` or if the connection is still open/valid. If `connect()` was never called or the connection was dropped, this will raise an `AttributeError` (NoneType has no attribute 'cursor').",
+      "exploit": "Not directly exploitable, but causes unhandled crash and potential information leakage from the traceback.",
+      "fix": "Add a check at the beginning of `execute_query` to verify `self.connection` is not None and is not closed. Implement automatic reconnection logic."
+    },
+    {
+      "id": 7,
+      "severity": "low",
+      "type": "security",
+      "line": "27-34",
+      "description": "The database connection does not use SSL/TLS by default. Without `sslmode='require'` or higher, credentials and data are transmitted in plaintext over the network.",
+      "exploit": "An attacker performing a man-in-the-middle attack on the network can sniff database credentials and query data.",
+      "fix": "Add `sslmode='require'` (or `'verify-full'` for certificate validation) to the `psycopg2.connect()` call, configurable via environment variable."
+    },
+    {
+      "id": 8,
+      "severity": "low",
+      "type": "security",
+      "line": "15",
+      "description": "The `DB_PORT` environment variable is used directly as a string without validation that it is a valid integer port number. A malformed value could cause unexpected behavior or a confusing error.",
+      "exploit": "Setting `DB_PORT` to a non-numeric or out-of-range value could cause a crash or unexpected connection behavior.",
+      "fix": "Validate that `self.port` is a numeric value within the valid port range (1-65535) before attempting to connect."
+    },
+    {
+      "id": 9,
+      "severity": "low",
+      "type": "logic",
+      "line": "63",
+      "description": "Every query, including SELECT statements, triggers a `self.connection.commit()`. While harmless for reads, this unnecessarily ends the transaction for every query, which could interfere with multi-statement transaction workflows.",
+      "exploit": "Not directly exploitable, but could cause unexpected behavior if a user expects transaction isolation across multiple queries.",
+      "fix": "Only commit for write operations (INSERT, UPDATE, DELETE, DDL), or provide explicit transaction management (BEGIN/COMMIT/ROLLBACK) support."
+    },
+    {
+      "id": 10,
+      "severity": "low",
+      "type": "performance",
+      "line": "59",
+      "description": "`cursor.fetchall()` loads all result rows into memory at once. For large result sets (millions of rows), this can cause memory exhaustion and denial of service.",
+      "exploit": "A user runs `SELECT * FROM very_large_table;` causing the process to consume all available memory.",
+      "fix": "Use `cursor.fetchmany(batch_size)` or `cursor.itersize` with a server-side cursor to process results in batches, or impose a LIMIT on queries."
+    },
+    {
+      "id": 11,
+      "severity": "info",
+      "type": "style",
+      "line": "101",
+      "description": "`import json` is inside the while loop body. While Python caches imports, placing it at the top of the file is the standard convention and avoids repeated import lookups.",
+      "exploit": "N/A",
+      "fix": "Move `import json` to the top of the file with other imports."
+    },
+    {
+      "id": 12,
+      "severity": "info",
+      "type": "logic",
+      "line": "82",
+      "description": "The `close()` method does not set `self.connection = None` after closing, which means subsequent calls to `execute_query` would attempt to use a closed connection, resulting in a `psycopg2.InterfaceError`.",
+      "exploit": "N/A — logic error rather than security issue.",
+      "fix": "Set `self.connection = None` after `self.connection.close()` and check for this state in `execute_query`."
+    }
+  ],
+  "adversary_challenges": [],
+  "surviving_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "99-108",
+      "description": "Raw SQL execution from user input with no parameterization or restrictions. The `main()` function takes arbitrary SQL from `input()` and passes it directly to `execute_query()` without any parameters. While the comment acknowledges this, there are zero guardrails — any user who can run this script can DROP tables, exfiltrate data, create users, execute `COPY` to read/write files on the server filesystem, etc.",
+      "exploit": "A user (or attacker who gains shell access) types `DROP TABLE users;` or `COPY (SELECT * FROM pg_shadow) TO '/tmp/hashes.txt';` to destroy data or escalate privileges.",
+      "fix": "At minimum, restrict to read-only queries (SET default_transaction_read_only = on), use a least-privilege database role, implement a query allowlist, or remove the interactive raw SQL feature entirely."
+    },
+    {
+      "id": 2,
+      "severity": "medium",
+      "type": "security",
+      "line": "22",
+      "description": "Credential validation failure causes `sys.exit(1)` but first prints a message to stdout that confirms which environment variables are expected. More critically, the credentials are stored as plain instance attributes on the object, making them accessible via introspection, heap dumps, or debugging tools.",
+      "exploit": "An attacker with access to the process memory or a debugger can read `db.password` directly from the object attributes.",
+      "fix": "Consider using a secrets manager (e.g., AWS Secrets Manager, HashiCorp Vault) instead of plain environment variables. Clear password from memory after establishing the connection if possible."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "security",
+      "line": "37-38",
+      "description": "Database connection error message includes the full exception `{e}`, which may leak sensitive information such as the hostname, port, database name, username, or partial connection string details to stdout/logs.",
+      "exploit": "If stdout/stderr is captured in logs accessible to unauthorized parties, connection details are exposed.",
+      "fix": "Log a generic error message to the user and log the detailed exception to a secured, access-controlled log file."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "70-71",
+      "description": "The database error message `print(f\"Database Error: {e}\")` can leak internal schema information, table names, column names, constraint names, and query details from PostgreSQL error messages.",
+      "exploit": "An attacker crafting malicious queries can use verbose error messages to enumerate the database schema (error-based enumeration).",
+      "fix": "Log detailed errors to a secure log file and return only a generic error message to the user."
+    },
+    {
+      "id": 5,
+      "severity": "medium",
+      "type": "security",
+      "line": "75",
+      "description": "Catching broad `Exception` and printing `f\"Unexpected Error: {e}\"` can leak stack trace information or internal details for unexpected error types.",
+      "exploit": "Unexpected exceptions (e.g., OS errors, memory errors) could reveal filesystem paths, internal state, or other sensitive information.",
+      "fix": "Log detailed error information securely and present only a sanitized message."
+    },
+    {
+      "id": 6,
+      "severity": "medium",
+      "type": "logic",
+      "line": "55-56",
+      "description": "`execute_query` accesses `self.connection` without checking if it is `None` or if the connection is still open/valid. If `connect()` was never called or the connection was dropped, this will raise an `AttributeError` (NoneType has no attribute 'cursor').",
+      "exploit": "Not directly exploitable, but causes unhandled crash and potential information leakage from the traceback.",
+      "fix": "Add a check at the beginning of `execute_query` to verify `self.connection` is not None and is not closed. Implement automatic reconnection logic."
+    },
+    {
+      "id": 7,
+      "severity": "low",
+      "type": "security",
+      "line": "27-34",
+      "description": "The database connection does not use SSL/TLS by default. Without `sslmode='require'` or higher, credentials and data are transmitted in plaintext over the network.",
+      "exploit": "An attacker performing a man-in-the-middle attack on the network can sniff database credentials and query data.",
+      "fix": "Add `sslmode='require'` (or `'verify-full'` for certificate validation) to the `psycopg2.connect()` call, configurable via environment variable."
+    },
+    {
+      "id": 8,
+      "severity": "low",
+      "type": "security",
+      "line": "15",
+      "description": "The `DB_PORT` environment variable is used directly as a string without validation that it is a valid integer port number. A malformed value could cause unexpected behavior or a confusing error.",
+      "exploit": "Setting `DB_PORT` to a non-numeric or out-of-range value could cause a crash or unexpected connection behavior.",
+      "fix": "Validate that `self.port` is a numeric value within the valid port range (1-65535) before attempting to connect."
+    },
+    {
+      "id": 9,
+      "severity": "low",
+      "type": "logic",
+      "line": "63",
+      "description": "Every query, including SELECT statements, triggers a `self.connection.commit()`. While harmless for reads, this unnecessarily ends the transaction for every query, which could interfere with multi-statement transaction workflows.",
+      "exploit": "Not directly exploitable, but could cause unexpected behavior if a user expects transaction isolation across multiple queries.",
+      "fix": "Only commit for write operations (INSERT, UPDATE, DELETE, DDL), or provide explicit transaction management (BEGIN/COMMIT/ROLLBACK) support."
+    },
+    {
+      "id": 10,
+      "severity": "low",
+      "type": "performance",
+      "line": "59",
+      "description": "`cursor.fetchall()` loads all result rows into memory at once. For large result sets (millions of rows), this can cause memory exhaustion and denial of service.",
+      "exploit": "A user runs `SELECT * FROM very_large_table;` causing the process to consume all available memory.",
+      "fix": "Use `cursor.fetchmany(batch_size)` or `cursor.itersize` with a server-side cursor to process results in batches, or impose a LIMIT on queries."
+    },
+    {
+      "id": 11,
+      "severity": "info",
+      "type": "style",
+      "line": "101",
+      "description": "`import json` is inside the while loop body. While Python caches imports, placing it at the top of the file is the standard convention and avoids repeated import lookups.",
+      "exploit": "N/A",
+      "fix": "Move `import json` to the top of the file with other imports."
+    },
+    {
+      "id": 12,
+      "severity": "info",
+      "type": "logic",
+      "line": "82",
+      "description": "The `close()` method does not set `self.connection = None` after closing, which means subsequent calls to `execute_query` would attempt to use a closed connection, resulting in a `psycopg2.InterfaceError`.",
+      "exploit": "N/A — logic error rather than security issue.",
+      "fix": "Set `self.connection = None` after `self.connection.close()` and check for this state in `execute_query`."
+    }
+  ],
+  "referee_verdict": {
+    "raw": "```json\n{\n  \"final_issues\": [\n    {\n      \"issue_id\": 1,\n      \"final_verdict\": \"rejected\",\n      \"final_severity\": \"info\",\n      \"explanation\": \"This is a local CLI tool designed specifically to act as a database client (like psql). Executing arbitrary SQL provided by the user via standard input is its intended functionality, not a vulnerability. There is no privilege boundary crossed, as the user running the script already has the database credentials and shell access.\"\n    },\n    {\n      \"issue_id\": 2,\n      \"final_verdict\": \"rejected\",\n      \"final_severity\": \"info\",\n      \"explanation\": \"Storing credentials in memory during the execution of",
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "confirmed",
+        "final_severity": "critical",
+        "explanation": "Fallback from adversary stage: Raw SQL execution from user input with no parameterization or restrictions. The `main()` function takes arbitrary SQL from `input()` and passes it directly to `execute_query()` without any parameters. While the comment acknowledges this, there are zero guardrails — any user who can run this script can DROP tables, exfiltrate data, create users, execute `COPY` to read/write files on the server filesystem, etc."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Fallback from adversary stage: Credential validation failure causes `sys.exit(1)` but first prints a message to stdout that confirms which environment variables are expected. More critically, the credentials are stored as plain instance attributes on the object, making them accessible via introspection, heap dumps, or debugging tools."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Fallback from adversary stage: Database connection error message includes the full exception `{e}`, which may leak sensitive information such as the hostname, port, database name, username, or partial connection string details to stdout/logs."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Fallback from adversary stage: The database error message `print(f\"Database Error: {e}\")` can leak internal schema information, table names, column names, constraint names, and query details from PostgreSQL error messages."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Fallback from adversary stage: Catching broad `Exception` and printing `f\"Unexpected Error: {e}\"` can leak stack trace information or internal details for unexpected error types."
+      },
+      {
+        "issue_id": 6,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Fallback from adversary stage: `execute_query` accesses `self.connection` without checking if it is `None` or if the connection is still open/valid. If `connect()` was never called or the connection was dropped, this will raise an `AttributeError` (NoneType has no attribute 'cursor')."
+      },
+      {
+        "issue_id": 7,
+        "final_verdict": "confirmed",
+        "final_severity": "low",
+        "explanation": "Fallback from adversary stage: The database connection does not use SSL/TLS by default. Without `sslmode='require'` or higher, credentials and data are transmitted in plaintext over the network."
+      },
+      {
+        "issue_id": 8,
+        "final_verdict": "confirmed",
+        "final_severity": "low",
+        "explanation": "Fallback from adversary stage: The `DB_PORT` environment variable is used directly as a string without validation that it is a valid integer port number. A malformed value could cause unexpected behavior or a confusing error."
+      },
+      {
+        "issue_id": 9,
+        "final_verdict": "confirmed",
+        "final_severity": "low",
+        "explanation": "Fallback from adversary stage: Every query, including SELECT statements, triggers a `self.connection.commit()`. While harmless for reads, this unnecessarily ends the transaction for every query, which could interfere with multi-statement transaction workflows."
+      },
+      {
+        "issue_id": 10,
+        "final_verdict": "confirmed",
+        "final_severity": "low",
+        "explanation": "Fallback from adversary stage: `cursor.fetchall()` loads all result rows into memory at once. For large result sets (millions of rows), this can cause memory exhaustion and denial of service."
+      },
+      {
+        "issue_id": 11,
+        "final_verdict": "confirmed",
+        "final_severity": "info",
+        "explanation": "Fallback from adversary stage: `import json` is inside the while loop body. While Python caches imports, placing it at the top of the file is the standard convention and avoids repeated import lookups."
+      },
+      {
+        "issue_id": 12,
+        "final_verdict": "confirmed",
+        "final_severity": "info",
+        "explanation": "Fallback from adversary stage: The `close()` method does not set `self.connection = None` after closing, which means subsequent calls to `execute_query` would attempt to use a closed connection, resulting in a `psycopg2.InterfaceError`."
+      }
+    ],
+    "summary": {
+      "total_found": 12,
+      "confirmed": 12,
+      "rejected": 0,
+      "modified": 0,
+      "finder_accuracy": 1.0,
+      "adversary_accuracy": 0.0,
+      "referee_fallback": true
+    },
+    "overall_code_quality": "critical"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

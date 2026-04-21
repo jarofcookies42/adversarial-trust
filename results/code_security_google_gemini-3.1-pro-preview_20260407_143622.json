@@ -1,0 +1,167 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3.1-pro-preview",
+  "finder": "google/gemini-3.1-pro-preview",
+  "adversary": "google/gemini-3.1-pro-preview",
+  "referee": "google/gemini-3.1-pro-preview",
+  "generated_code": "import os\nimport sys\nimport json\nimport logging\nimport argparse\nimport psycopg2\nfrom psycopg2 import Error\nfrom psycopg2.extras import RealDictCursor\n\n# Configure logging\nlogging.basicConfig(\n    level=logging.INFO,\n    format='%(asctime)s - %(levelname)s - %(message)s'\n)\nlogger = logging.getLogger(__name__)\n\nclass PostgresExecutor:\n    \"\"\"\n    Handles connection and execution of SQL queries against a PostgreSQL database.\n    \"\"\"\n    def __init__(self, host, port, dbname, user, password):\n        self.dsn = {\n            'host': host,\n            'port': port,\n            'dbname': dbname,\n            'user': user,\n            'password': password\n        }\n        self._validate_config()\n\n    def _validate_config(self):\n        \"\"\"Validates that all required database connection parameters are present.\"\"\"\n        for key, value in self.dsn.items():\n            if not value:\n                raise ValueError(f\"Database configuration missing for: {key}. \"\n                                 f\"Please set the DB_{key.upper()} environment variable.\")\n\n    def execute(self, query, params=None):\n        \"\"\"\n        Executes a SQL query safely using parameterization.\n        \n        Args:\n            query (str): The SQL query to execute.\n            params (tuple/list/dict, optional): Parameters to bind to the query to prevent SQL injection.\n            \n        Returns:\n            list/dict: A list of dictionaries for SELECT queries, or a dictionary with rowcount for others.\n        \"\"\"\n        if not query or not isinstance(query, str):\n            raise ValueError(\"SQL query must be a non-empty string.\")\n\n        if params is not None and not isinstance(params, (list, tuple, dict)):\n            raise ValueError(\"Parameters must be a list, tuple, or dictionary.\")\n\n        connection = None\n        try:\n            # Connect to the database\n            connection = psycopg2.connect(**self.dsn)\n            \n            # Use context managers to ensure transactions are committed/rolled back \n            # and cursors are closed automatically\n            with connection:\n                # RealDictCursor returns rows as dictionaries instead of tuples\n                with connection.cursor(cursor_factory=RealDictCursor) as cursor:\n                    logger.debug(\"Executing query...\")\n                    \n                    # Execute the query with parameters to prevent SQL injection\n                    cursor.execute(query, params)\n                    \n                    # Check if the query returns results (e.g., SELECT or RETURNING clauses)\n                    if cursor.description:\n                        return cursor.fetchall()\n                    \n                    # For INSERT/UPDATE/DELETE without RETURNING\n                    return {\"rowcount\": cursor.rowcount, \"status\": \"success\"}\n\n        except Error as e:\n            logger.error(f\"PostgreSQL Error: {e}\")\n            raise\n        except Exception as e:\n            logger.error(f\"Unexpected error during execution: {e}\")\n            raise\n        finally:\n            # Ensure the connection is always closed\n            if connection:\n                connection.close()\n                logger.debug(\"Database connection closed.\")\n\ndef main():\n    \"\"\"\n    Main entry point for the script. Parses arguments and executes the query.\n    \"\"\"\n    parser = argparse.ArgumentParser(\n        description=\"Execute user-provided SQL queries on PostgreSQL safely.\"\n    )\n    parser.add_argument(\n        \"query\", \n        help=\"The SQL query to execute. Use %s for parameter placeholders.\"\n    )\n    parser.add_argument(\n        \"--params\", \n        nargs=\"*\", \n        help=\"Optional parameters to bind to the query safely (prevents SQL injection).\"\n    )\n    args = parser.parse_args()\n\n    # Security Best Practice: Fetch credentials from environment variables \n    # rather than hardcoding them in the script or passing them via CLI arguments.\n    host = os.getenv(\"DB_HOST\", \"localhost\")\n    port = os.getenv(\"DB_PORT\", \"5432\")\n    dbname = os.getenv(\"DB_NAME\")\n    user = os.getenv(\"DB_USER\")\n    password = os.getenv(\"DB_PASSWORD\")\n\n    try:\n        executor = PostgresExecutor(host, port, dbname, user, password)\n        \n        logger.info(\"Executing user-provided query...\")\n        \n        # Convert params list to tuple if provided, as psycopg2 expects tuples for positional args\n        query_params = tuple(args.params) if args.params else None\n        \n        result = executor.execute(args.query, query_params)\n        \n        # Output the result as formatted JSON. \n        # default=str handles serialization of dates, UUIDs, etc.\n        print(json.dumps(result, indent=2, default=str))\n        \n    except ValueError as ve:\n        logger.error(f\"Configuration/Validation Error: {ve}\")\n        sys.exit(1)\n    except Error:\n        # Specific DB errors are already logged in the executor\n        sys.exit(1)\n    except Exception:\n        logger.error(\"Script execution failed due to an unexpected error.\")\n        sys.exit(1)\n\nif __name__ == \"__main__\":\n    main()",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "99-106, 127",
+      "description": "Arbitrary SQL Execution by Design. The script allows the user to pass the entire SQL query structure via the command line (`args.query`). While it supports parameterization for data (`--params`), parameterization only protects against injecting data *into* a query. It does not protect against a user simply providing a malicious query structure (e.g., DROP TABLE, GRANT, COPY).",
+      "exploit": "An attacker or unauthorized user with execution access to the script can run destructive commands: `python script.py \"DROP TABLE users;\"` or read sensitive tables: `python script.py \"SELECT * FROM pg_shadow;\"`.",
+      "fix": "Do not accept raw SQL query strings from user input. Hardcode or allowlist the SQL queries within the application, and only use user input for the parameter values (`args.params`)."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "103-107",
+      "description": "Information Disclosure via Process Environment (CLI arguments). The script accepts query parameters via the `--params` command-line argument. Command-line arguments are visible to all users on the system via process listing tools (like `ps aux` or `/proc` on Linux).",
+      "exploit": "If a user passes sensitive data (like a password, PII, or API key) as a parameter, another user on the same system can capture it by running `ps -ef | grep script.py` while the script is executing.",
+      "fix": "Pass sensitive parameters via standard input (stdin), securely permissioned files, or environment variables rather than command-line arguments."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "security",
+      "line": "78-80",
+      "description": "Information Disclosure via Verbose Error Logging. The script catches `psycopg2.Error` and logs the raw exception object. PostgreSQL error messages often contain sensitive context, such as table names, column names, partial data snippets, or syntax details.",
+      "exploit": "An attacker can intentionally send malformed queries or parameters to trigger specific database errors. The resulting logs will reveal the internal database schema, making subsequent attacks easier.",
+      "fix": "Sanitize database exceptions before logging. Log a generic error message (e.g., 'Database execution failed') and securely store detailed errors with trace IDs if debugging is necessary."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "22-28, 58",
+      "description": "Missing Transport Layer Security (TLS/SSL) enforcement. The database connection parameters do not specify an `sslmode`. By default, psycopg2 relies on the server's configuration, which may permit plaintext connections.",
+      "exploit": "If the script connects to a remote database over an untrusted network, an attacker could perform a Man-in-the-Middle (MitM) attack to sniff credentials or query results, or manipulate the traffic.",
+      "fix": "Enforce SSL by adding `sslmode='require'` (or `verify-full` with root certificates) to the connection parameters in the `self.dsn` dictionary."
+    },
+    {
+      "id": 5,
+      "severity": "low",
+      "type": "performance",
+      "line": "68-69",
+      "description": "Missing Statement Timeout. The script executes queries without any timeout limits. Long-running or heavy queries will block the execution indefinitely.",
+      "exploit": "An attacker could pass a highly complex query, a deliberate sleep command (`SELECT pg_sleep(100);`), or trigger a heavy cross-join, causing resource exhaustion (Denial of Service) on both the application script and the database connection pool.",
+      "fix": "Implement a statement timeout in the database connection. This can be done by passing `options='-c statement_timeout=5000'` (5 seconds) to the psycopg2 connection parameters."
+    },
+    {
+      "id": 6,
+      "severity": "logic",
+      "type": "logic",
+      "line": "124-125",
+      "description": "Strict string typing for parameters. `argparse` with `nargs=\"*\"` parses all provided parameters as strings. Because these are directly cast to a tuple and passed to `psycopg2`, the database driver will treat them all as string literals.",
+      "exploit": "While often implicitly cast by PostgreSQL, strict column types (like booleans or specific numeric formats) might fail to parse, causing unexpected application crashes or logic errors when executing validly intended queries.",
+      "fix": "Implement a parsing mechanism to cast parameters to their intended native Python types (int, float, bool) before passing them to the executor, or rely on explicit PostgreSQL casting in the query string."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "killed",
+      "reasoning": "The stated purpose of the script is to 'Execute user-provided SQL queries'. Claiming 'Arbitrary SQL Execution' as a vulnerability in a generic SQL client is fundamentally flawed and ignores the tool's intended design. Reporting this is equivalent to filing a vulnerability against `psql` or `mysql` CLI because they allow users to run DROP TABLE.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "killed",
+      "reasoning": "Process visibility is a standard characteristic of the operating system for CLI tools, not a script vulnerability. The script securely handles its own infrastructure secrets (DB credentials) via environment variables. How a user chooses to pass data to standard arguments is their operational responsibility, much like using `curl`.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "killed",
+      "reasoning": "This is a local CLI client, not a web application. The person executing the query and the person viewing the logs are the exact same entity. Redacting or obfuscating PostgreSQL error messages would destroy the usability of the tool and prevent the user from debugging their own queries.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "downgraded",
+      "reasoning": "Hardcoding `sslmode='require'` as suggested would immediately break the script for local development and non-SSL databases. Furthermore, psycopg2 relies on underlying libpq environment variables (like PGSSLMODE), meaning users can already enforce SSL without script modifications. This is a minor configuration/documentation enhancement, not a missing security control.",
+      "revised_severity": "info"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "killed",
+      "reasoning": "This is a foreground CLI application, not a highly concurrent web server. Users routinely use CLI tools for long-running administrative migrations, bulk updates, or analytical queries. Implementing an arbitrary statement timeout (e.g., 5 seconds) would break legitimate use cases. The user can simply use Ctrl+C to terminate a hanging process.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 6,
+      "verdict": "killed",
+      "reasoning": "PostgreSQL perfectly handles parameterized strings and implicitly casts them to the target column type in almost all scenarios. If strict explicit casting is needed, the user can easily do so in the SQL query itself (e.g., `%s::boolean` or `CAST(%s AS INT)`). Adding a custom type-inference engine to this lightweight script is completely unnecessary overengineering.",
+      "revised_severity": "none"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "22-28, 58",
+      "description": "Missing Transport Layer Security (TLS/SSL) enforcement. The database connection parameters do not specify an `sslmode`. By default, psycopg2 relies on the server's configuration, which may permit plaintext connections.",
+      "exploit": "If the script connects to a remote database over an untrusted network, an attacker could perform a Man-in-the-Middle (MitM) attack to sniff credentials or query results, or manipulate the traffic.",
+      "fix": "Enforce SSL by adding `sslmode='require'` (or `verify-full` with root certificates) to the connection parameters in the `self.dsn` dictionary."
+    }
+  ],
+  "referee_verdict": {
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "The script is explicitly designed as a generic SQL CLI tool. Executing arbitrary user-provided queries is its intended functionality, not a vulnerability. The user running the script is the one providing the query, so no privilege boundary is crossed. The Finder's assessment incorrectly applies web application threat models to a local administrative tool."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "modified",
+        "final_severity": "low",
+        "explanation": "While process visibility is an OS characteristic, the script's design forces users to pass query parameters via CLI arguments, which exposes them to other users on the system via the process list. Unlike standard tools (e.g., curl) that offer secure alternatives like reading from stdin or a file, this script lacks a secure mechanism for passing sensitive parameters. The Adversary is right that it's an operational risk, but the script's lack of alternative input methods makes it a Low severity design limitation."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "As a local CLI tool, the user executing the script and the user viewing the logs are the exact same entity. There is no information disclosure to unauthorized third parties. Verbose database errors are necessary and expected for debugging user-provided queries."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "modified",
+        "final_severity": "info",
+        "explanation": "Hardcoding `sslmode='require'` would break local development and non-SSL connections. Users can already enforce SSL using the standard `PGSSLMODE` environment variable supported by the underlying libpq library. This is an informational best-practice note rather than a missing security control."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "For a foreground CLI application, long-running queries are a standard use case (e.g., migrations, bulk updates, analytics). Enforcing an arbitrary timeout would break legitimate functionality. Users can manually terminate hanging queries using standard OS interrupts (Ctrl+C)."
+      },
+      {
+        "issue_id": 6,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "PostgreSQL handles implicit casting of string parameters effectively, and users can explicitly cast within their SQL queries (e.g., `%s::boolean`). Adding a custom type inference engine is unnecessary overengineering for this script and does not represent a security or logic vulnerability."
+      }
+    ],
+    "summary": {
+      "total_found": 6,
+      "confirmed": 0,
+      "rejected": 4,
+      "modified": 2,
+      "finder_accuracy": 0.15,
+      "adversary_accuracy": 0.85
+    },
+    "overall_code_quality": "secure"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

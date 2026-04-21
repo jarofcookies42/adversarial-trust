@@ -1,0 +1,194 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3.1-flash-lite-preview",
+  "finder": "google/gemini-3.1-flash-lite-preview",
+  "adversary": "google/gemini-3.1-flash-lite-preview",
+  "referee": "google/gemini-3.1-flash-lite-preview",
+  "generated_code": "import os\nimport psycopg2\nfrom psycopg2 import sql, pool\nfrom typing import List, Dict, Any, Optional\n\nclass DatabaseManager:\n    \"\"\"\n    Handles secure connections to a PostgreSQL database using a connection pool.\n    \"\"\"\n    def __init__(self):\n        # Configuration should be loaded from environment variables for security\n        self._db_pool = psycopg2.pool.SimpleConnectionPool(\n            1, 10,\n            host=os.getenv(\"DB_HOST\", \"localhost\"),\n            database=os.getenv(\"DB_NAME\", \"postgres\"),\n            user=os.getenv(\"DB_USER\", \"postgres\"),\n            password=os.getenv(\"DB_PASSWORD\")\n        )\n\n    def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:\n        \"\"\"\n        Executes a SQL query safely.\n        \n        WARNING: This implementation assumes the user provides parameterized queries.\n        Directly concatenating user input into the query string is strictly forbidden.\n        \"\"\"\n        conn = None\n        results = []\n        try:\n            conn = self._db_pool.getconn()\n            with conn.cursor() as cursor:\n                # Execute the query using parameterized input to prevent SQL Injection\n                cursor.execute(query, params)\n                \n                # If the query returns rows, fetch them\n                if cursor.description:\n                    colnames = [desc[0] for desc in cursor.description]\n                    results = [dict(zip(colnames, row)) for row in cursor.fetchall()]\n                \n                conn.commit()\n        except (psycopg2.DatabaseError, Exception) as e:\n            if conn:\n                conn.rollback()\n            raise RuntimeError(f\"Database error: {e}\")\n        finally:\n            if conn:\n                self._db_pool.putconn(conn)\n        \n        return results\n\n    def close_all(self):\n        self._db_pool.closeall()\n\ndef run_user_query(query: str, params: tuple = ()):\n    \"\"\"\n    Example wrapper to demonstrate secure execution.\n    \"\"\"\n    # Basic validation: Ensure query is not empty\n    if not query or not query.strip():\n        raise ValueError(\"Query cannot be empty.\")\n\n    # Security: Prevent DDL/Administrative commands if necessary\n    forbidden_keywords = ['DROP', 'TRUNCATE', 'GRANT', 'REVOKE']\n    if any(keyword in query.upper() for keyword in forbidden_keywords):\n        raise PermissionError(\"Execution of administrative commands is not allowed.\")\n\n    db = DatabaseManager()\n    try:\n        return db.execute_query(query, params)\n    finally:\n        db.close_all()\n\n# --- Usage Example ---\nif __name__ == \"__main__\":\n    # Example: Fetching user data securely\n    # DO NOT use f-strings or string formatting for query parameters\n    sql_query = \"SELECT username, email FROM users WHERE id = %s\"\n    user_id = (101,)\n    \n    try:\n        data = run_user_query(sql_query, user_id)\n        print(data)\n    except Exception as e:\n        print(f\"Failed to execute: {e}\")",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "high",
+      "type": "security",
+      "line": "56-61",
+      "description": "Blacklist-based input validation for SQL commands is easily bypassed.",
+      "exploit": "An attacker can use variations like 'DELETE FROM', 'ALTER', 'CREATE', or obfuscation techniques (e.g., comments or whitespace variations) that are not in the 'forbidden_keywords' list to disrupt the database.",
+      "fix": "Do not attempt to parse SQL commands using keywords. Use a database user with least-privilege permissions (e.g., read-only) if the application does not need DDL access."
+    },
+    {
+      "id": 2,
+      "severity": "medium",
+      "type": "security",
+      "line": "42",
+      "description": "Information leakage in exception handling.",
+      "exploit": "The `RuntimeError` raises `str(e)`, which likely contains raw database errors, schema details, or table names. An attacker can use these errors to map the database structure (blind SQLi or error-based reconnaissance).",
+      "fix": "Log the detailed error internally and raise a generic error message to the user."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "performance",
+      "line": "66-70",
+      "description": "Resource exhaustion and performance anti-pattern in usage example.",
+      "exploit": "The `run_user_query` function initializes a new `DatabaseManager` (and thus a new `SimpleConnectionPool`) for every single query execution. This will rapidly exhaust available database connections and system memory.",
+      "fix": "The `DatabaseManager` should be a singleton or managed as a long-lived object, not instantiated per query."
+    },
+    {
+      "id": 4,
+      "severity": "low",
+      "type": "security",
+      "line": "15-16",
+      "description": "Insecure default configuration.",
+      "exploit": "If environment variables are missing, the code defaults to a 'postgres' database and user on 'localhost', potentially relying on insecure local environment defaults if the DB isn't properly locked down.",
+      "fix": "Do not provide defaults for sensitive database credentials. If they are missing, the application should fail to start."
+    },
+    {
+      "id": 5,
+      "severity": "low",
+      "type": "logic",
+      "line": "33-35",
+      "description": "Unnecessary transaction handling for read-only queries.",
+      "exploit": "The code calls `conn.commit()` after every query execution, including `SELECT` statements. This creates unnecessary transaction overhead and locking in the database.",
+      "fix": "Check the query type or use a separate method for read vs write operations to avoid unnecessary commits."
+    },
+    {
+      "id": 6,
+      "severity": "low",
+      "type": "security",
+      "line": "46",
+      "description": "Connection leak in `__init__` if pool creation fails.",
+      "exploit": "If the pool fails to initialize, the program may enter an undefined state. While this is a setup issue, improper cleanup of partial connections can occur depending on the psycopg2 version.",
+      "fix": "Use a try-except block in `__init__` to handle connection pool creation errors gracefully."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "valid",
+      "reasoning": "Blacklisting is fundamentally broken security architecture. It provides a false sense of security while failing to stop common malicious commands like DELETE, ALTER, or EXECUTE. Relying on this is a critical design flaw, though the severity is downgraded because the actual execution logic is safely parameterized.",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "valid",
+      "reasoning": "Exposing raw database driver exceptions (which often include table names, constraint violations, and sometimes syntax snippets) is a classic information disclosure vulnerability. This aids an attacker in reconnaissance.",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "valid",
+      "reasoning": "This is a catastrophic performance bug. Instantiating a connection pool per request completely defeats the purpose of connection pooling. It leads to socket exhaustion and massive latency overhead on every query.",
+      "revised_severity": "high"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "killed",
+      "reasoning": "This is a developer experience preference, not a vulnerability. Providing defaults for 'localhost' is standard practice for local development environments. It does not introduce a security flaw in production, provided the environment variables are correctly set in the deployment configuration.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "downgraded",
+      "reasoning": "While technically correct that 'commit' is unnecessary for SELECTs in some DB configurations, standard Postgres behavior for 'psycopg2' is to implicitly start a transaction. Calling 'commit' on a read-only transaction is a no-op that does not cause 'unnecessary locking' in Postgres. This is a pedantic nitpick, not a performance issue.",
+      "revised_severity": "info"
+    },
+    {
+      "issue_id": 6,
+      "verdict": "killed",
+      "reasoning": "This is entirely theoretical. 'psycopg2.pool.SimpleConnectionPool' does not open connections until 'getconn()' is called. If the pool creation itself fails (e.g., due to bad host/auth), there is no 'leak' to clean up. The suggestion adds unnecessary boilerplate for a non-existent state.",
+      "revised_severity": "none"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 1,
+      "severity": "high",
+      "type": "security",
+      "line": "56-61",
+      "description": "Blacklist-based input validation for SQL commands is easily bypassed.",
+      "exploit": "An attacker can use variations like 'DELETE FROM', 'ALTER', 'CREATE', or obfuscation techniques (e.g., comments or whitespace variations) that are not in the 'forbidden_keywords' list to disrupt the database.",
+      "fix": "Do not attempt to parse SQL commands using keywords. Use a database user with least-privilege permissions (e.g., read-only) if the application does not need DDL access."
+    },
+    {
+      "id": 2,
+      "severity": "medium",
+      "type": "security",
+      "line": "42",
+      "description": "Information leakage in exception handling.",
+      "exploit": "The `RuntimeError` raises `str(e)`, which likely contains raw database errors, schema details, or table names. An attacker can use these errors to map the database structure (blind SQLi or error-based reconnaissance).",
+      "fix": "Log the detailed error internally and raise a generic error message to the user."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "performance",
+      "line": "66-70",
+      "description": "Resource exhaustion and performance anti-pattern in usage example.",
+      "exploit": "The `run_user_query` function initializes a new `DatabaseManager` (and thus a new `SimpleConnectionPool`) for every single query execution. This will rapidly exhaust available database connections and system memory.",
+      "fix": "The `DatabaseManager` should be a singleton or managed as a long-lived object, not instantiated per query."
+    },
+    {
+      "id": 5,
+      "severity": "low",
+      "type": "logic",
+      "line": "33-35",
+      "description": "Unnecessary transaction handling for read-only queries.",
+      "exploit": "The code calls `conn.commit()` after every query execution, including `SELECT` statements. This creates unnecessary transaction overhead and locking in the database.",
+      "fix": "Check the query type or use a separate method for read vs write operations to avoid unnecessary commits."
+    }
+  ],
+  "referee_verdict": {
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "modified",
+        "final_severity": "medium",
+        "explanation": "Blacklisting is an ineffective security control. While the parameterized queries prevent SQL injection, the blacklist provides a false sense of security and is easily bypassed by other destructive commands (e.g., DELETE, UPDATE). It should be removed in favor of least-privilege database roles."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Exposing raw database exceptions to the end-user is a security risk as it leaks database schema information, which facilitates reconnaissance for further attacks."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "modified",
+        "final_severity": "high",
+        "explanation": "The current implementation creates a new connection pool for every query. This is a severe architectural flaw that will lead to socket exhaustion and significant performance degradation under load."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "Providing sensible defaults for local development is standard practice. The security risk is minimal provided the production environment is configured correctly."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "modified",
+        "final_severity": "info",
+        "explanation": "While unnecessary, calling commit on a read-only transaction in PostgreSQL is a no-op and does not cause significant performance issues or locking. It is a minor code smell."
+      },
+      {
+        "issue_id": 6,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "The adversary is correct; the pool does not establish connections until requested, so there is no connection leak during initialization failure."
+      }
+    ],
+    "summary": {
+      "total_found": 6,
+      "confirmed": 3,
+      "rejected": 2,
+      "modified": 1,
+      "finder_accuracy": 0.66,
+      "adversary_accuracy": 0.83
+    },
+    "overall_code_quality": "concerning"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

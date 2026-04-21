@@ -1,0 +1,215 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3.1-flash-lite-preview",
+  "finder": "google/gemini-3.1-flash-lite-preview",
+  "adversary": "google/gemini-3.1-flash-lite-preview",
+  "referee": "google/gemini-3.1-flash-lite-preview",
+  "generated_code": "import os\nimport sys\nimport psycopg2\nfrom psycopg2 import sql, pool\nfrom typing import Optional, List, Any\n\n# Configuration - In production, use environment variables or a secrets manager\nDB_HOST = os.getenv(\"DB_HOST\", \"localhost\")\nDB_NAME = os.getenv(\"DB_NAME\", \"your_db\")\nDB_USER = os.getenv(\"DB_USER\", \"your_user\")\nDB_PASS = os.getenv(\"DB_PASS\", \"your_password\")\nDB_PORT = os.getenv(\"DB_PORT\", \"5432\")\n\nclass DatabaseManager:\n    \"\"\"\n    Handles secure database connections and query execution using a connection pool.\n    \"\"\"\n    def __init__(self):\n        try:\n            # Initialize connection pool for production efficiency\n            self.connection_pool = psycopg2.pool.SimpleConnectionPool(\n                1, 10,\n                host=DB_HOST,\n                database=DB_NAME,\n                user=DB_USER,\n                password=DB_PASS,\n                port=DB_PORT\n            )\n        except psycopg2.Error as e:\n            print(f\"Error creating connection pool: {e}\")\n            sys.exit(1)\n\n    def execute_query(self, query: str, params: Optional[tuple] = None) -> List[Any]:\n        \"\"\"\n        Executes a SQL query safely.\n        \n        SECURITY NOTE: \n        - Never use f-strings or string concatenation to build queries.\n        - Always use parameterized queries (the `params` argument) to prevent SQL Injection.\n        \"\"\"\n        conn = None\n        results = []\n        \n        # Basic validation: Ensure query is not empty\n        if not query or not query.strip():\n            raise ValueError(\"Query cannot be empty.\")\n\n        try:\n            conn = self.connection_pool.getconn()\n            with conn.cursor() as cursor:\n                # Execute the query using parameterized input\n                cursor.execute(query, params)\n                \n                # If the query returns rows (SELECT), fetch them\n                if cursor.description:\n                    results = cursor.fetchall()\n                \n                conn.commit()\n        except psycopg2.Error as e:\n            if conn:\n                conn.rollback()\n            print(f\"Database error: {e}\")\n            raise\n        finally:\n            if conn:\n                self.connection_pool.putconn(conn)\n        \n        return results\n\n    def close_all(self):\n        \"\"\"Closes the connection pool.\"\"\"\n        if self.connection_pool:\n            self.connection_pool.closeall()\n\ndef main():\n    \"\"\"\n    Example usage demonstrating secure query execution.\n    \"\"\"\n    db = DatabaseManager()\n    \n    try:\n        # Example 1: Safe SELECT with parameters\n        # DO NOT DO: f\"SELECT * FROM users WHERE id = {user_input}\"\n        user_id = 1\n        query = \"SELECT username, email FROM users WHERE id = %s;\"\n        \n        print(f\"Executing query: {query} with params: ({user_id})\")\n        data = db.execute_query(query, (user_id,))\n        \n        for row in data:\n            print(f\"Result: {row}\")\n\n        # Example 2: Safe INSERT/UPDATE\n        # update_query = \"UPDATE users SET last_login = NOW() WHERE id = %s;\"\n        # db.execute_query(update_query, (user_id,))\n\n    except Exception as e:\n        print(f\"Application error: {e}\")\n    finally:\n        db.close_all()\n\nif __name__ == \"__main__\":\n    main()",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "7-11",
+      "description": "Hardcoded default credentials and configuration in the source code.",
+      "exploit": "If this code is committed to version control, attackers can extract the default database credentials (even if only intended for development), providing a starting point for lateral movement or data exfiltration.",
+      "fix": "Remove default values for DB_PASS and DB_USER. Require environment variables to be set, or use a proper secrets management solution (e.g., AWS Secrets Manager, HashiCorp Vault)."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "49",
+      "description": "Information disclosure through print statements in production error handling.",
+      "exploit": "The `print(f\"Database error: {e}\")` statement prints raw database error messages to `stdout`. These messages often contain schema details, table names, or constraint violations that provide reconnaissance information to an attacker.",
+      "fix": "Use a proper logging framework (e.g., `logging` module). Log detailed errors to a secure file or monitoring system and return generic, sanitized error messages to the application layer."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "security",
+      "line": "52",
+      "description": "Improper transaction management (Implicit auto-commit behavior).",
+      "exploit": "By calling `conn.commit()` after every `execute_query`, this manager effectively forces auto-commit behavior on all queries. This prevents the user from grouping multiple statements into a single atomic transaction. An attacker might exploit a partial transaction state if multiple dependent operations are intended but failing midway.",
+      "fix": "Implement explicit transaction context managers (`with conn:`) or allow the `execute_query` method to accept a transactional context/parameter, rather than forcing a commit every time."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "logic",
+      "line": "25-28",
+      "description": "Use of `SimpleConnectionPool` is not thread-safe for multi-threaded applications.",
+      "exploit": "While `SimpleConnectionPool` is technically thread-safe for getting/putting connections, it is a basic implementation that can lead to performance bottlenecks or connection exhaustion under load compared to `ThreadedConnectionPool`. Additionally, if multiple threads access the same instance without locking, race conditions during initialization can occur.",
+      "fix": "Use `psycopg2.pool.ThreadedConnectionPool` if this application is meant to be multi-threaded, which is standard for web services."
+    },
+    {
+      "id": 5,
+      "severity": "low",
+      "type": "security",
+      "line": "40-41",
+      "description": "Lack of input sanitization for the `query` argument itself.",
+      "exploit": "While the code correctly uses parameters for values, the `query` argument itself is passed directly to the cursor. If an attacker can control the *structure* of the SQL string (e.g., via dynamic query building elsewhere in the app that passes a string to this function), this is a bypass of parameterized protection.",
+      "fix": "While `psycopg2` requires raw SQL strings, enforce strict allow-listing of allowed table/column names if dynamic queries are required, or use an ORM to manage query structure."
+    },
+    {
+      "id": 6,
+      "severity": "low",
+      "type": "performance",
+      "line": "22",
+      "description": "`sys.exit(1)` on database connection failure.",
+      "exploit": "This kills the entire process immediately upon initialization failure. In a production environment (like a web server process), this can cause cascading failures or prevent the service from gracefully reporting an error or attempting a reconnection strategy.",
+      "fix": "Raise a custom exception or log the error and allow the application to implement a retry loop rather than force-killing the process."
+    },
+    {
+      "id": 7,
+      "severity": "info",
+      "type": "security",
+      "line": "16",
+      "description": "Missing database connection timeout parameters.",
+      "exploit": "The connection pool does not specify connection timeouts or `connect_timeout` parameters. An attacker could perform a Denial of Service (DoS) attack by opening many connections and leaving them hanging, causing the pool to exhaust its limit waiting for connection establishment.",
+      "fix": "Add `connect_timeout=5` (or similar) to the pool arguments to ensure the application fails fast if the database is unresponsive."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "valid",
+      "reasoning": "While documented as 'In production, use environment variables', committing code with default credentials like 'your_password' is a classic foot-gun. It happens constantly in real-world scenarios. Even if developers think 'it's just a local config', these often drift into dev/staging environments.",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "downgraded",
+      "reasoning": "This is standard debugging boilerplate. While I agree production should use structured logging, calling this a 'high' security risk is hysterical. It's an operational oversight, not a vulnerability. It doesn't allow remote code execution or data extraction on its own; it's a passive information leak at worst.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "killed",
+      "reasoning": "The 'vulnerability' here assumes a design pattern that the class isn't even meant to support. `execute_query` is a simple wrapper for atomic executions. If the user needs transactions, they wouldn't use this specific wrapper method. Calling it a security vulnerability because it doesn't support complex transaction chaining is a design critique, not a flaw.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "killed",
+      "reasoning": "The issue claims `SimpleConnectionPool` is not thread-safe. That is factually incorrect regarding `psycopg2`. `SimpleConnectionPool` is thread-safe; it is merely not designed for managing connections across *different* threads in the same way `ThreadedConnectionPool` is (which maintains a mapping). This is a performance/scaling recommendation, not a logic vulnerability.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "killed",
+      "reasoning": "This is ridiculous. `psycopg2` requires a raw SQL string to operate. The 'exploit' described is: 'If an attacker can control the structure of the SQL string...'. If an attacker controls the code that calls this function with dynamic, unsanitized strings, they have already compromised the application. You cannot blame the database helper for the caller's failure to sanitize input.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 6,
+      "verdict": "downgraded",
+      "reasoning": "The finding calls this a 'security' issue, but it's pure availability engineering. A hard crash on startup failure is often preferable to a zombie state where the app runs without a database and throws cryptic `NoneType` errors later. It's a design choice for initialization failure.",
+      "revised_severity": "info"
+    },
+    {
+      "issue_id": 7,
+      "verdict": "valid",
+      "reasoning": "This is a legitimate production-hardening finding. Missing timeouts is a standard DoS vector for connection pools. It's 'low' impact, but definitely a valid point for robust system design.",
+      "revised_severity": "low"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "7-11",
+      "description": "Hardcoded default credentials and configuration in the source code.",
+      "exploit": "If this code is committed to version control, attackers can extract the default database credentials (even if only intended for development), providing a starting point for lateral movement or data exfiltration.",
+      "fix": "Remove default values for DB_PASS and DB_USER. Require environment variables to be set, or use a proper secrets management solution (e.g., AWS Secrets Manager, HashiCorp Vault)."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "49",
+      "description": "Information disclosure through print statements in production error handling.",
+      "exploit": "The `print(f\"Database error: {e}\")` statement prints raw database error messages to `stdout`. These messages often contain schema details, table names, or constraint violations that provide reconnaissance information to an attacker.",
+      "fix": "Use a proper logging framework (e.g., `logging` module). Log detailed errors to a secure file or monitoring system and return generic, sanitized error messages to the application layer."
+    },
+    {
+      "id": 6,
+      "severity": "low",
+      "type": "performance",
+      "line": "22",
+      "description": "`sys.exit(1)` on database connection failure.",
+      "exploit": "This kills the entire process immediately upon initialization failure. In a production environment (like a web server process), this can cause cascading failures or prevent the service from gracefully reporting an error or attempting a reconnection strategy.",
+      "fix": "Raise a custom exception or log the error and allow the application to implement a retry loop rather than force-killing the process."
+    },
+    {
+      "id": 7,
+      "severity": "info",
+      "type": "security",
+      "line": "16",
+      "description": "Missing database connection timeout parameters.",
+      "exploit": "The connection pool does not specify connection timeouts or `connect_timeout` parameters. An attacker could perform a Denial of Service (DoS) attack by opening many connections and leaving them hanging, causing the pool to exhaust its limit waiting for connection establishment.",
+      "fix": "Add `connect_timeout=5` (or similar) to the pool arguments to ensure the application fails fast if the database is unresponsive."
+    }
+  ],
+  "referee_verdict": {
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "modified",
+        "final_severity": "medium",
+        "explanation": "Hardcoded default credentials are a security anti-pattern. While the code includes a comment about environment variables, providing default values in source code is a common source of accidental credential leakage. It is not 'critical' as it is not an active exploit, but it is a significant configuration risk."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "modified",
+        "final_severity": "low",
+        "explanation": "Printing raw database exceptions to stdout is poor practice and aids reconnaissance, but it is not a 'high' severity vulnerability. It is an operational information disclosure issue."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "rejected",
+        "final_severity": "low",
+        "explanation": "This is a design choice, not a security vulnerability. The class is designed for atomic query execution. If a developer requires complex transaction management, they should use a different pattern or library, but the current implementation is not 'broken' or insecure."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "rejected",
+        "final_severity": "low",
+        "explanation": "The claim that `SimpleConnectionPool` is not thread-safe is factually incorrect; it is thread-safe in `psycopg2`. This is a performance/scalability recommendation, not a security or logic vulnerability."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "rejected",
+        "final_severity": "low",
+        "explanation": "The responsibility for query structure lies with the caller. A database utility class cannot sanitize the structure of a query without knowing the schema. This is not a vulnerability in the utility class itself."
+      },
+      {
+        "issue_id": 6,
+        "final_verdict": "modified",
+        "final_severity": "info",
+        "explanation": "This is an availability/operational concern, not a security issue. While `sys.exit` is often undesirable in production, it is a design choice for initialization failure, not a vulnerability."
+      },
+      {
+        "issue_id": 7,
+        "final_verdict": "modified",
+        "final_severity": "low",
+        "explanation": "Missing connection timeouts is a valid hardening point for production systems to prevent resource exhaustion (DoS) if the database becomes unresponsive."
+      }
+    ],
+    "summary": {
+      "total_found": 7,
+      "confirmed": 0,
+      "rejected": 3,
+      "modified": 4,
+      "finder_accuracy": 0.57,
+      "adversary_accuracy": 0.85
+    },
+    "overall_code_quality": "mostly_secure"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

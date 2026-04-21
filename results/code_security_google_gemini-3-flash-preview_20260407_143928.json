@@ -1,0 +1,227 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3-flash-preview",
+  "finder": "google/gemini-3-flash-preview",
+  "adversary": "google/gemini-3-flash-preview",
+  "referee": "google/gemini-3-flash-preview",
+  "generated_code": "import os\nimport sys\nimport psycopg2\nfrom psycopg2 import sql, Error\nfrom typing import List, Any, Tuple\n\ndef get_db_connection():\n    \"\"\"\n    Establishes a connection to the PostgreSQL database using environment variables.\n    Best practice: Use environment variables instead of hardcoding credentials.\n    \"\"\"\n    try:\n        # Expected environment variables:\n        # DB_NAME, DB_USER, DB_PASS, DB_HOST, DB_PORT\n        conn = psycopg2.connect(\n            dbname=os.getenv(\"DB_NAME\", \"postgres\"),\n            user=os.getenv(\"DB_USER\", \"postgres\"),\n            password=os.getenv(\"DB_PASS\", \"\"),\n            host=os.getenv(\"DB_HOST\", \"localhost\"),\n            port=os.getenv(\"DB_PORT\", \"5432\"),\n            connect_timeout=5\n        )\n        return conn\n    except Error as e:\n        print(f\"Error: Unable to connect to the database.\\n{e}\")\n        sys.exit(1)\n\ndef execute_query(query: str) -> Tuple[List[Any], List[str]]:\n    \"\"\"\n    Executes a SQL query and returns the results and column headers.\n    \n    Security Note: This function executes raw SQL. In a production app, \n    never pass unsanitized user input directly into this function. \n    Use parameterized queries for dynamic values.\n    \"\"\"\n    conn = None\n    results = []\n    columns = []\n    \n    # Basic validation\n    if not query.strip():\n        raise ValueError(\"Query string cannot be empty.\")\n\n    try:\n        conn = get_db_connection()\n        # Set session to read-only if you want to prevent modifications\n        # conn.set_session(readonly=True)\n        \n        with conn.cursor() as cursor:\n            cursor.execute(query)\n            \n            # Check if the query returns rows (SELECT, FETCH, etc.)\n            if cursor.description:\n                columns = [desc[0] for desc in cursor.description]\n                results = cursor.fetchall()\n            \n            conn.commit()\n            return results, columns\n\n    except Error as e:\n        if conn:\n            conn.rollback()\n        raise e\n    finally:\n        if conn:\n            conn.close()\n\ndef main():\n    \"\"\"\n    Entry point for the script. Reads a query from the user via CLI.\n    \"\"\"\n    print(\"--- PostgreSQL Query Executor ---\")\n    print(\"Enter your SQL query (terminate with a semicolon and Enter):\")\n    \n    # Read multi-line input until a semicolon is found\n    query_lines = []\n    while True:\n        line = input()\n        query_lines.append(line)\n        if \";\" in line:\n            break\n    \n    full_query = \" \".join(query_lines).strip()\n\n    try:\n        rows, headers = execute_query(full_query)\n        \n        if headers:\n            # Print headers\n            print(\"\\n\" + \" | \".join(headers))\n            print(\"-\" * (len(\" | \".join(headers))))\n            \n            # Print rows\n            for row in rows:\n                print(\" | \".join(str(val) for val in row))\n            print(f\"\\n({len(rows)} rows returned)\")\n        else:\n            print(\"\\nQuery executed successfully. No rows returned.\")\n            \n    except Exception as e:\n        print(f\"\\nExecution Error: {e}\", file=sys.stderr)\n\nif __name__ == \"__main__\":\n    # Ensure environment variables are loaded or set here for testing\n    # os.environ[\"DB_NAME\"] = \"test_db\"\n    \n    try:\n        main()\n    except KeyboardInterrupt:\n        print(\"\\nOperation cancelled by user.\")\n        sys.exit(0)",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "41-80",
+      "description": "SQL Injection vulnerability via raw query execution. The application accepts multi-line SQL input from stdin and executes it directly against the database without any sanitization or parameterization.",
+      "exploit": "An attacker can provide input like 'DROP TABLE users;--' or 'SELECT * FROM pg_shadow;' to delete data or exfiltrate sensitive database credentials and user information.",
+      "fix": "Remove the ability to execute raw arbitrary SQL from user input. Use parameterized queries (e.g., cursor.execute('SELECT * FROM table WHERE id = %s', (id_val,))) and implement a strict allow-list of queries."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "25",
+      "description": "Information Disclosure through verbose error handling. The 'get_db_connection' function prints the raw exception 'e' to stdout before exiting. This can leak sensitive backend details like internal IP addresses, database versions, or schema hints.",
+      "exploit": "By providing an invalid port or host through environment variables or triggering a specific connection error, an attacker can see the full traceback and error message, revealing internal infrastructure details.",
+      "fix": "Log errors to a secure file and show a generic error message to the user."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "security",
+      "line": "15-20",
+      "description": "Insecure default credentials and fallback values. The code defaults to user 'postgres' with an empty password and host 'localhost'.",
+      "exploit": "If environment variables are missing or misconfigured, the script will attempt to connect using administrative defaults, which may succeed if the DB is improperly secured, granting the script excessive privileges.",
+      "fix": "Remove default values for sensitive fields. If required variables are missing, the script should raise a configuration error and fail immediately."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "52",
+      "description": "Lack of session isolation (Read-Write by default). The code executes queries with the default session settings, which allow for INSERT, UPDATE, DELETE, and DROP operations.",
+      "exploit": "Even if the intended use is for data retrieval, an attacker can modify or destroy the database state because 'readonly=True' is commented out.",
+      "fix": "Uncomment 'conn.set_session(readonly=True)' and ensure the database user used by the application has the minimum necessary privileges (Least Privilege Principle)."
+    },
+    {
+      "id": 5,
+      "severity": "medium",
+      "type": "performance",
+      "line": "34",
+      "description": "Potential Resource Exhaustion (DoS). The function 'execute_query' calls 'cursor.fetchall()', which loads the entire result set into memory.",
+      "exploit": "An attacker can execute a query that returns millions of rows (e.g., a cross join), causing the application to consume all available RAM and crash (OOM).",
+      "fix": "Use 'cursor.fetchmany(size)' in a loop or a server-side cursor to process results in manageable chunks."
+    },
+    {
+      "id": 6,
+      "severity": "low",
+      "type": "security",
+      "line": "21",
+      "description": "Short connection timeout. A timeout of 5 seconds might be susceptible to 'slowloris' style connection exhaustion if the DB is under load, or it might facilitate port scanning/enumeration.",
+      "exploit": "Minimal exploitability, but can be used to map network latency or identify if a database is behind a firewall.",
+      "fix": "Adjust timeout based on specific network requirements and implement retry logic with exponential backoff."
+    },
+    {
+      "id": 7,
+      "severity": "low",
+      "type": "logic",
+      "line": "95",
+      "description": "Inconsistent multi-line input termination. The logic 'if \";\" in line:' stops reading when a semicolon appears anywhere in the line, potentially truncating valid complex queries that contain semicolons inside strings or comments.",
+      "exploit": "An attacker could bypass intended logic if the query parser treats the truncated query differently than the user intended.",
+      "fix": "Use a more robust SQL parser or require a specific EOF character/sequence to terminate input."
+    },
+    {
+      "id": 8,
+      "severity": "low",
+      "type": "security",
+      "line": "10",
+      "description": "Sensitive data in Environment Variables. While better than hardcoding, environment variables can often be read by other processes or logged in container orchestration systems (like Kubernetes or Docker).",
+      "exploit": "An attacker with local process access or access to system logs could retrieve the DB_PASS.",
+      "fix": "Use a dedicated secrets manager (AWS Secrets Manager, HashiCorp Vault) or mount secrets as files with restricted permissions."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "killed",
+      "reasoning": "The application's stated purpose is a 'PostgreSQL Query Executor' CLI tool. Complaining that a query executor allows raw SQL is like complaining that a compiler executes code. The 'exploit' (dropping tables) is the intended functionality of such a tool for an authorized user. This is not a vulnerability in the code, but a feature of the tool's design.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "downgraded",
+      "reasoning": "This is a local CLI script, not a web service. The 'user' seeing the error is the person running the script on their own terminal. If they have the permissions to run this script and configure its environment variables, they are already within the trust boundary. Leakage to 'stdout' in a CLI tool is standard behavior for debugging connection issues.",
+      "revised_severity": "info"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "killed",
+      "reasoning": "Standard defaults like 'localhost' and 'postgres' are helpful for local development. In a production environment, the environment variables would be set. Attempting to connect to 'localhost' with an empty password is not a vulnerability; if the DB is open and has no password, the vulnerability lies in the DB configuration, not the client script.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "killed",
+      "reasoning": "As a 'Query Executor,' the tool is designed to perform the tasks the user requests. Forcing read-only mode would break the tool's utility for DBAs or developers who need to perform migrations or updates. Least privilege should be handled at the Database User/Role level, not hardcoded in the client script.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "valid",
+      "reasoning": "Using fetchall() on an arbitrary query executor is dangerous. A user could accidentally (or a malicious actor could intentionally) trigger a large result set (e.g., SELECT * FROM large_table) that crashes the local machine or the terminal session via OOM. This is a legitimate stability concern for this specific type of tool.",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 6,
+      "verdict": "killed",
+      "reasoning": "A 5-second timeout is a standard, reasonable default for a synchronous CLI tool to prevent it from hanging indefinitely. Claiming a timeout facilitates port scanning is a reach; the tool is not a scanner, and network enumeration is better done with actual network tools.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 7,
+      "verdict": "valid",
+      "reasoning": "The input logic is genuinely flawed. A query like `INSERT INTO logs VALUES ('Semi-colon; inside string');` would be prematurely truncated, resulting in a syntax error. This is a legitimate logic bug that affects the tool's primary function.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 8,
+      "verdict": "killed",
+      "reasoning": "For a standalone Python script, environment variables are the industry standard for configuration. Suggesting a dedicated secrets manager like HashiCorp Vault for a simple CLI tool is over-engineering and ignores the context of how such scripts are typically deployed and used.",
+      "revised_severity": "none"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "25",
+      "description": "Information Disclosure through verbose error handling. The 'get_db_connection' function prints the raw exception 'e' to stdout before exiting. This can leak sensitive backend details like internal IP addresses, database versions, or schema hints.",
+      "exploit": "By providing an invalid port or host through environment variables or triggering a specific connection error, an attacker can see the full traceback and error message, revealing internal infrastructure details.",
+      "fix": "Log errors to a secure file and show a generic error message to the user."
+    },
+    {
+      "id": 5,
+      "severity": "medium",
+      "type": "performance",
+      "line": "34",
+      "description": "Potential Resource Exhaustion (DoS). The function 'execute_query' calls 'cursor.fetchall()', which loads the entire result set into memory.",
+      "exploit": "An attacker can execute a query that returns millions of rows (e.g., a cross join), causing the application to consume all available RAM and crash (OOM).",
+      "fix": "Use 'cursor.fetchmany(size)' in a loop or a server-side cursor to process results in manageable chunks."
+    },
+    {
+      "id": 7,
+      "severity": "low",
+      "type": "logic",
+      "line": "95",
+      "description": "Inconsistent multi-line input termination. The logic 'if \";\" in line:' stops reading when a semicolon appears anywhere in the line, potentially truncating valid complex queries that contain semicolons inside strings or comments.",
+      "exploit": "An attacker could bypass intended logic if the query parser treats the truncated query differently than the user intended.",
+      "fix": "Use a more robust SQL parser or require a specific EOF character/sequence to terminate input."
+    }
+  ],
+  "referee_verdict": {
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "The Adversary is correct. The script is explicitly designed as a 'PostgreSQL Query Executor' CLI tool. In this context, executing raw SQL is the intended functionality, not a vulnerability. While the Finder's security note in the code itself is good practice, flagging the core feature as a 'Critical SQL Injection' is a context-blind finding. However, it remains 'info' as a reminder that this tool should only be used by authorized personnel."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "modified",
+        "final_severity": "low",
+        "explanation": "While the Adversary is correct that this is a CLI tool and the user is likely the administrator, printing raw exception objects (which can include connection strings or internal paths) to stdout is still suboptimal. It is downgraded from High to Low because the exposure is limited to the local console user, but it remains a valid concern for sensitive environments."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "Defaulting to localhost/postgres is standard for developer UX in CLI tools. The security of the database itself (e.g., allowing empty passwords) is a server-side configuration issue. The script's fallbacks do not introduce a vulnerability in the code logic itself."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "As a general-purpose query executor, restricting the session to read-only would defeat the purpose for users needing to perform DDL or DML operations. Access control and 'Least Privilege' should be managed via the database user permissions (RBAC), not hardcoded in the client script."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "Both the Finder and Adversary agree. Using `fetchall()` on an arbitrary query executor is a significant stability risk. A large result set can easily cause an Out-Of-Memory (OOM) crash on the client machine. Using a generator or `fetchmany()` is the correct approach for this type of tool."
+      },
+      {
+        "issue_id": 6,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "A 5-second timeout is a reasonable default for a CLI tool to prevent hanging. The Finder's claim that this facilitates port scanning is highly speculative and not a practical vulnerability for this application type."
+      },
+      {
+        "issue_id": 7,
+        "final_verdict": "confirmed",
+        "final_severity": "low",
+        "explanation": "The logic for detecting the end of a query is flawed. Checking for a semicolon anywhere in a line will cause the script to truncate queries that contain semicolons within string literals or comments. This is a valid functional bug."
+      },
+      {
+        "issue_id": 8,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "Environment variables are a standard and acceptable way to pass configuration to a CLI script. While secrets managers are more secure, requiring one for a simple Python script is out of scope and over-engineered for the provided context."
+      }
+    ],
+    "summary": {
+      "total_found": 8,
+      "confirmed": 2,
+      "rejected": 5,
+      "modified": 1,
+      "finder_accuracy": 0.375,
+      "adversary_accuracy": 0.875
+    },
+    "overall_code_quality": "mostly_secure"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

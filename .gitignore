@@ -3,6 +3,7 @@
 .claude/
 logs/
 results/
+!results/code_security_*_20260407_*.json
 __pycache__/
 *.pyc
 .venv/

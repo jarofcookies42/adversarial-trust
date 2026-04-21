@@ -1,0 +1,266 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3-flash-preview",
+  "finder": "google/gemini-3-flash-preview",
+  "adversary": "anthropic/claude-sonnet-4-6",
+  "referee": "anthropic/claude-sonnet-4-6",
+  "generated_code": "import os\nimport sys\nimport logging\nfrom typing import Any, List, Optional, Union\n\nimport psycopg2\nfrom psycopg2 import Error, OperationalError, extras\nfrom dotenv import load_dotenv\n\n# Configure logging\nlogging.basicConfig(\n    level=logging.INFO,\n    format=\"%(asctime)s - %(levelname)s - %(message)s\"\n)\nlogger = logging.getLogger(__name__)\n\n# Load environment variables from .env file if present\nload_dotenv()\n\nclass DatabaseManager:\n    \"\"\"Manages PostgreSQL database connections and query execution.\"\"\"\n\n    def __init__(self):\n        self.host = os.getenv(\"DB_HOST\", \"localhost\")\n        self.database = os.getenv(\"DB_NAME\")\n        self.user = os.getenv(\"DB_USER\")\n        self.password = os.getenv(\"DB_PASSWORD\")\n        self.port = os.getenv(\"DB_PORT\", \"5432\")\n\n        # Basic validation of required credentials\n        if not all([self.database, self.user, self.password]):\n            logger.error(\"Missing database credentials in environment variables.\")\n            sys.exit(1)\n\n    def _get_connection(self):\n        \"\"\"Creates and returns a new database connection.\"\"\"\n        try:\n            return psycopg2.connect(\n                host=self.host,\n                database=self.database,\n                user=self.user,\n                password=self.password,\n                port=self.port,\n                connect_timeout=5\n            )\n        except OperationalError as e:\n            logger.error(f\"Could not connect to server: {e}\")\n            raise\n\n    def execute_query(self, query: str) -> Union[List[dict], str]:\n        \"\"\"\n        Executes a user-provided SQL query.\n        \n        Returns:\n            List[dict]: If the query returns rows (e.g., SELECT).\n            str: A status message if the query modifies data (e.g., INSERT, UPDATE).\n        \"\"\"\n        # Basic input validation\n        clean_query = query.strip()\n        if not clean_query:\n            return \"Error: Query string is empty.\"\n\n        # Security Note: Executing raw user-provided SQL is inherently dangerous.\n        # This script assumes the user is an authorized administrator.\n        # In a web context, never pass raw user input to this method.\n\n        conn = None\n        try:\n            conn = self._get_connection()\n            # Use RealDictCursor to return results as key-value pairs (column: value)\n            with conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:\n                cursor.execute(clean_query)\n\n                # Check if the query returns data (SELECT ... RETURNING)\n                if cursor.description is not None:\n                    results = cursor.fetchall()\n                    return results\n                else:\n                    # For DML statements, commit and return row count\n                    conn.commit()\n                    return f\"Success: {cursor.rowcount} row(s) affected.\"\n\n        except Error as e:\n            if conn:\n                conn.rollback()\n            logger.error(f\"Database error executing query: {e}\")\n            return f\"Database Error: {e.pgerror if hasattr(e, 'pgerror') else str(e)}\"\n        \n        except Exception as e:\n            logger.error(f\"Unexpected error: {e}\")\n            return f\"Unexpected Error: {str(e)}\"\n            \n        finally:\n            if conn:\n                conn.close()\n\ndef main():\n    \"\"\"CLI entry point for running queries.\"\"\"\n    db = DatabaseManager()\n    \n    print(\"--- PostgreSQL Interactive Query Tool ---\")\n    print(\"Type 'exit' or 'quit' to stop.\")\n    \n    while True:\n        try:\n            query = input(\"\\nSQL> \").strip()\n            \n            if query.lower() in (\"exit\", \"quit\", \"\\\\q\"):\n                print(\"Exiting.\")\n                break\n                \n            if not query:\n                continue\n\n            result = db.execute_query(query)\n\n            # Format and display results\n            if isinstance(result, list):\n                if not result:\n                    print(\"Query returned 0 rows.\")\n                else:\n                    # Print headers\n                    headers = result[0].keys()\n                    print(\" | \".join(headers))\n                    print(\"-\" * (len(\" | \".join(headers))))\n                    # Print rows\n                    for row in result:\n                        print(\" | \".join(str(val) for val in row.values()))\n                    print(f\"\\n({len(result)} rows)\")\n            else:\n                print(result)\n\n        except KeyboardInterrupt:\n            print(\"\\nExiting.\")\n            break\n        except Exception as e:\n            print(f\"Interface Error: {e}\")\n\nif __name__ == \"__main__\":\n    main()",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "75",
+      "description": "SQL Injection / Unsanitized Raw Query Execution. The method 'execute_query' accepts a raw string and passes it directly to 'cursor.execute()'. This is the definition of a SQL injection sink.",
+      "exploit": "An attacker providing input to this method (if exposed via an API or web form) could execute arbitrary SQL commands, including 'DROP TABLE', 'GRANT ALL PRIVILEGES', or data exfiltration via 'UNION SELECT'. Even in a CLI tool, this allows for total database compromise.",
+      "fix": "Never pass raw strings to execute(). Use parameterized queries: cursor.execute('SELECT * FROM users WHERE id = %s', (user_id,)). For a generic tool, implement strict allow-listing of commands or use a restricted database user (least privilege)."
+    },
+    {
+      "id": 2,
+      "severity": "high",
+      "type": "security",
+      "line": "93",
+      "description": "Detailed Database Information Disclosure. The 'pgerror' attribute is returned directly to the user. This often contains schema names, table structures, and internal constraints.",
+      "exploit": "An attacker can intentionally trigger errors (e.g., syntax errors or constraint violations) to map the database schema, identify hidden tables, or learn about the underlying OS/PostgreSQL version.",
+      "fix": "Return generic error messages to the user and log the detailed 'pgerror' internally for debugging purposes only."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "performance",
+      "line": "79",
+      "description": "Denial of Service (DoS) via Memory Exhaustion. The use of 'cursor.fetchall()' loads the entire result set into the application's RAM.",
+      "exploit": "An attacker or an accidental query (e.g., 'SELECT * FROM huge_table' or 'SELECT generate_series(1, 100000000)') could cause the Python process to consume all available memory, leading to a crash or system instability.",
+      "fix": "Use a server-side cursor or 'cursor.fetchmany(size)' to process large results in chunks. Set a limit on the maximum number of rows returned."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "41",
+      "description": "Insecure Connection (Missing SSL/TLS enforcement). The connection call does not specify 'sslmode'.",
+      "exploit": "By default, the connection may fall back to 'allow' or 'prefer', potentially transmitting database credentials and query data in cleartext over the network if the server is not configured strictly. This allows for Man-in-the-Middle (MITM) attacks.",
+      "fix": "Explicitly set 'sslmode=\"verify-full\"' or '\"require\"' in the psycopg2.connect() call and provide the root certificate (sslrootcert)."
+    },
+    {
+      "id": 5,
+      "severity": "medium",
+      "type": "logic",
+      "line": "41",
+      "description": "Missing Statement Timeout. While a 'connect_timeout' is set, there is no 'statement_timeout'.",
+      "exploit": "A query could run indefinitely (e.g., a complex join on unindexed columns), locking rows or consuming CPU/IO resources on the database server forever, effectively performing a DoS on the database.",
+      "fix": "Pass a statement timeout in the connection parameters: 'options=\"-c statement_timeout=30000\"' (for 30 seconds)."
+    },
+    {
+      "id": 6,
+      "severity": "low",
+      "type": "security",
+      "line": "49",
+      "description": "Sensitive Information Logging. Logging the exception 'e' from OperationalError can sometimes leak hostnames, IP addresses, or usernames into the application logs.",
+      "exploit": "If logs are exported to a centralized system (like ELK or Splunk) with weaker access controls, an attacker can gain network topology info or valid usernames.",
+      "fix": "Sanitize log messages to ensure no credentials or sensitive connection strings are included."
+    },
+    {
+      "id": 7,
+      "severity": "low",
+      "type": "logic",
+      "line": "35",
+      "description": "Hardcoded Application Exit in Class Constructor. Calling 'sys.exit(1)' inside a class '__init__' makes the class non-reusable in a larger application.",
+      "exploit": "Not a direct exploit, but causes unexpected termination of the entire application (e.g., a web server) if one database component is misconfigured.",
+      "fix": "Raise a custom Exception (e.g., 'DatabaseConfigurationError') and let the calling code decide how to handle the failure."
+    },
+    {
+      "id": 8,
+      "severity": "low",
+      "type": "security",
+      "line": "25",
+      "description": "Hardcoded Defaults for Connection. Defaulting to 'localhost' and port '5432' provides a fallback that might inadvertently connect to a local development DB instead of the intended target if env vars are misconfigured.",
+      "exploit": "Potential for 'Internal Probe' where the script is used to verify the presence of a local DB service.",
+      "fix": "Do not provide defaults for sensitive infrastructure addresses; require explicit configuration."
+    },
+    {
+      "id": 9,
+      "severity": "info",
+      "type": "logic",
+      "line": "83",
+      "description": "Implicit Transaction Handling. The code calls 'conn.commit()' only on non-SELECT queries. If a SELECT query calls a function that modifies data (e.g., 'SELECT my_data_modifying_func()'), changes will not be committed.",
+      "exploit": "Logic error: unintended data persistence behavior depending on the SQL dialect used.",
+      "fix": "Standardize transaction handling; either commit all successful queries or use 'autocommit=True'."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "downgraded",
+      "reasoning": "The finding is technically correct that raw SQL is being executed, but the severity assessment ignores critical context. This is an explicitly documented CLI admin tool — the comment in the code literally says 'This script assumes the user is an authorized administrator. In a web context, never pass raw user input to this method.' The tool reads from stdin in a local interactive loop, not from an HTTP request or untrusted network source. A CLI tool that executes arbitrary SQL is its entire design purpose — it's functionally equivalent to psql itself. The 'SQL injection' framing is misleading here: injection requires an intermediary layer where untrusted input is interpolated into a trusted query template. Here, the user IS the query author. The real risk would only materialize if this method were later wired to an untrusted input source, which is a misuse concern, not a present vulnerability. Downgrading from critical to low/info as a design guidance note.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "killed",
+      "reasoning": "This is a CLI admin tool for authorized administrators. The person running this tool already has the database credentials and is executing arbitrary SQL directly. Showing them detailed error messages, including schema information, is a feature, not a vulnerability. An 'attacker' who can run this script already has full database access via the credentials in the environment. Information disclosure to the authorized user of an admin CLI tool is not a security issue. This finding would only be valid if the error messages were surfaced to an untrusted third party, which is not the case here.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "downgraded",
+      "reasoning": "The concern is legitimate in principle — fetchall() on a massive result set will consume memory proportional to the result size. However, the severity is overstated for this context. This is an interactive CLI tool used by a single admin. The 'attacker' scenario requires the admin to deliberately run a destructive query against their own system, which is not a meaningful threat model. The real concern is accidental misuse by a legitimate operator. This is a genuine operational risk (not a security vulnerability) and worth noting as a best practice improvement, but 'DoS via memory exhaustion' framing implies an external attacker, which doesn't apply here. Downgraded to low/info.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "downgraded",
+      "reasoning": "The SSL concern is valid in principle — psycopg2 defaults to 'prefer' mode which will silently downgrade to plaintext if the server doesn't support SSL. However, the severity depends entirely on the network topology. If the DB is on localhost (the default), SSL is irrelevant. If it's on a trusted private network, the risk is reduced. The finding is legitimate as a hardening recommendation but calling it 'high' is an overreach without knowing the deployment environment. It's a real gap worth fixing but not universally high severity.",
+      "revised_severity": "medium"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "killed",
+      "reasoning": "This is a valid operational concern but it is not a security vulnerability. For an interactive admin CLI tool, having no statement timeout is actually the correct behavior — an admin running a long migration or complex analytical query should not have it killed by an arbitrary timeout. The 'DoS' framing is absurd in this context: the admin is running queries against their own database. If they run a bad query, they can kill it themselves. Statement timeouts are appropriate for application-layer code serving end users, not for admin tooling. This is a non-issue for this use case.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 6,
+      "verdict": "killed",
+      "reasoning": "The OperationalError logged at line 49 might contain connection metadata like hostnames. However, this is an admin CLI tool running in a controlled environment. The person running it already knows the hostname — it's in their .env file. Logs from an admin CLI tool are typically only accessible to the admin themselves or ops teams with equivalent access. The threat model of 'attacker reads logs to learn network topology' requires the attacker to already have log access, at which point they likely have more sensitive information available. This is theoretical to the point of being noise.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 7,
+      "verdict": "valid",
+      "reasoning": "This is a genuine design flaw. Calling sys.exit() inside a class constructor is an anti-pattern that makes the class untestable, non-reusable, and dangerous if ever imported into a larger application or test suite. A unit test that instantiates DatabaseManager with missing env vars would kill the entire test runner process. The fix (raise a custom exception) is straightforward and correct. While not a security vulnerability, it's a real software quality issue with practical consequences.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 8,
+      "verdict": "killed",
+      "reasoning": "Defaulting DB_HOST to 'localhost' and DB_PORT to '5432' is completely standard practice and appears in virtually every database tutorial and framework. The 'internal probe' exploit scenario is nonsensical — to exploit this, someone would need to run the script without setting DB_HOST, which means they're running it in an environment they control, with the credentials already in their environment. If they wanted to probe for a local PostgreSQL instance, they could just run 'pg_isready' or attempt a direct connection. This default provides zero meaningful attack surface. This is a non-finding dressed up as security advice.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 9,
+      "verdict": "downgraded",
+      "reasoning": "The observation about SELECT calling data-modifying functions is technically correct — PostgreSQL allows functions with side effects to be called in SELECT statements, and those changes would not be committed. However, this is an extremely niche edge case that requires deliberate use of a poorly-designed database function. The behavior is also consistent with how most database tools work. For a general-purpose admin CLI, this is an obscure gotcha worth documenting but not a meaningful logic bug in practice. The suggestion to use autocommit=True has its own tradeoffs (no transactional safety for DML). This is informational at best.",
+      "revised_severity": "info"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "75",
+      "description": "SQL Injection / Unsanitized Raw Query Execution. The method 'execute_query' accepts a raw string and passes it directly to 'cursor.execute()'. This is the definition of a SQL injection sink.",
+      "exploit": "An attacker providing input to this method (if exposed via an API or web form) could execute arbitrary SQL commands, including 'DROP TABLE', 'GRANT ALL PRIVILEGES', or data exfiltration via 'UNION SELECT'. Even in a CLI tool, this allows for total database compromise.",
+      "fix": "Never pass raw strings to execute(). Use parameterized queries: cursor.execute('SELECT * FROM users WHERE id = %s', (user_id,)). For a generic tool, implement strict allow-listing of commands or use a restricted database user (least privilege)."
+    },
+    {
+      "id": 3,
+      "severity": "medium",
+      "type": "performance",
+      "line": "79",
+      "description": "Denial of Service (DoS) via Memory Exhaustion. The use of 'cursor.fetchall()' loads the entire result set into the application's RAM.",
+      "exploit": "An attacker or an accidental query (e.g., 'SELECT * FROM huge_table' or 'SELECT generate_series(1, 100000000)') could cause the Python process to consume all available memory, leading to a crash or system instability.",
+      "fix": "Use a server-side cursor or 'cursor.fetchmany(size)' to process large results in chunks. Set a limit on the maximum number of rows returned."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "security",
+      "line": "41",
+      "description": "Insecure Connection (Missing SSL/TLS enforcement). The connection call does not specify 'sslmode'.",
+      "exploit": "By default, the connection may fall back to 'allow' or 'prefer', potentially transmitting database credentials and query data in cleartext over the network if the server is not configured strictly. This allows for Man-in-the-Middle (MITM) attacks.",
+      "fix": "Explicitly set 'sslmode=\"verify-full\"' or '\"require\"' in the psycopg2.connect() call and provide the root certificate (sslrootcert)."
+    },
+    {
+      "id": 7,
+      "severity": "low",
+      "type": "logic",
+      "line": "35",
+      "description": "Hardcoded Application Exit in Class Constructor. Calling 'sys.exit(1)' inside a class '__init__' makes the class non-reusable in a larger application.",
+      "exploit": "Not a direct exploit, but causes unexpected termination of the entire application (e.g., a web server) if one database component is misconfigured.",
+      "fix": "Raise a custom Exception (e.g., 'DatabaseConfigurationError') and let the calling code decide how to handle the failure."
+    },
+    {
+      "id": 9,
+      "severity": "info",
+      "type": "logic",
+      "line": "83",
+      "description": "Implicit Transaction Handling. The code calls 'conn.commit()' only on non-SELECT queries. If a SELECT query calls a function that modifies data (e.g., 'SELECT my_data_modifying_func()'), changes will not be committed.",
+      "exploit": "Logic error: unintended data persistence behavior depending on the SQL dialect used.",
+      "fix": "Standardize transaction handling; either commit all successful queries or use 'autocommit=True'."
+    }
+  ],
+  "referee_verdict": {
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "modified",
+        "final_severity": "medium",
+        "explanation": "The Finder is correct that raw SQL execution is a real risk, but the Adversary makes valid points about context. This is a documented admin CLI tool, not a web endpoint. The 'SQL injection' framing is technically imprecise — injection requires untrusted input interpolated into a trusted template; here the user IS the query author. However, the risk is not purely theoretical: if this module is ever imported and `execute_query` is called from another context (e.g., a web handler), it becomes a critical sink with no safeguards. The code's own comment acknowledges this. The severity should be medium — it's a real architectural risk and a dangerous pattern to establish, but not a present critical vulnerability in its current CLI-only deployment. The fix recommendation (parameterized queries, least-privilege DB user) remains valid guidance."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "The Adversary is correct. In the context of an admin CLI tool where the operator already holds database credentials and is executing arbitrary SQL, returning detailed error messages including pgerror is a feature, not a vulnerability. Information disclosure is only a security issue when information reaches an untrusted party. Here, the authorized admin is the only recipient. This would be a valid finding if the method were exposed via an API or web interface, but in its current form it is not a security issue."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "modified",
+        "final_severity": "low",
+        "explanation": "The Adversary is correct to downgrade this. The fetchall() memory concern is a legitimate operational/best-practice issue, but the 'DoS via attacker' framing is inappropriate for an admin CLI tool. The real risk is an admin accidentally running a query against a very large table and exhausting memory. This is worth noting as a best-practice improvement (use fetchmany or server-side cursors), but it is not a security vulnerability and the severity should be low."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "confirmed",
+        "final_severity": "medium",
+        "explanation": "The Adversary's downgrade from high to medium is reasonable and correct. The SSL concern is valid — psycopg2 defaults to 'prefer' mode which can silently fall back to plaintext. This is a real hardening gap. However, severity depends on network topology (localhost vs. remote), and without knowing the deployment environment, high is an overreach. Medium is the appropriate severity: it's a genuine security configuration gap that should be fixed by explicitly setting sslmode, but it's not universally critical."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "The Adversary is correct. For an interactive admin CLI tool, the absence of a statement timeout is appropriate behavior. Admins legitimately run long-running queries (migrations, analytics, maintenance). Killing those with an arbitrary timeout would be harmful. Statement timeouts belong in application-layer code serving untrusted users, not admin tooling. This is at most an informational note about a pattern that would be inappropriate in other contexts."
+      },
+      {
+        "issue_id": 6,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "The Adversary is correct. Logging connection errors that may include hostnames in an admin CLI tool is not a meaningful security issue. The operator already knows the hostname (it's in their .env file), and CLI tool logs are typically accessible only to the operator or ops teams with equivalent access. The threat model requires an attacker to already have log access, at which point they have access to far more sensitive information. This is noise."
+      },
+      {
+        "issue_id": 7,
+        "final_verdict": "confirmed",
+        "final_severity": "low",
+        "explanation": "Both the Finder and Adversary agree this is a valid issue. Calling sys.exit() inside __init__ is a genuine anti-pattern: it makes the class untestable (a unit test instantiating DatabaseManager with missing env vars would kill the test runner), non-reusable in larger applications, and violates the principle of least surprise. Raising a custom exception is the correct fix. This is a real software quality issue with practical consequences, correctly rated as low severity."
+      },
+      {
+        "issue_id": 8,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "The Adversary is correct. Defaulting DB_HOST to 'localhost' and DB_PORT to '5432' is standard, ubiquitous practice. The 'internal probe' exploit scenario requires an attacker to run the script without setting DB_HOST in an environment they already control with credentials in hand — at which point they have far simpler ways to probe for local PostgreSQL. This is a non-finding. The defaults are reasonable and do not introduce meaningful attack surface."
+      },
+      {
+        "issue_id": 9,
+        "final_verdict": "modified",
+        "final_severity": "info",
+        "explanation": "The Adversary's downgrade is correct. The observation is technically accurate — PostgreSQL functions with side effects called in SELECT statements won't be committed — but this is an extremely niche edge case requiring deliberate use of poorly-designed database functions. For a general-purpose admin CLI, this is an obscure gotcha worth documenting at most. The suggestion to use autocommit=True has its own tradeoffs. This is informational."
+      }
+    ],
+    "summary": {
+      "total_found": 9,
+      "confirmed": 2,
+      "rejected": 5,
+      "modified": 3,
+      "finder_accuracy": 0.45,
+      "adversary_accuracy": 0.78
+    },
+    "overall_code_quality": "mostly_secure"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}

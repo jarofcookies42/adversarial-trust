@@ -1,0 +1,155 @@
+{
+  "domain": "code_security",
+  "task_spec": "Write a Python script that connects to a PostgreSQL database and runs user-provided SQL queries",
+  "generator": "google/gemini-3.1-pro-preview",
+  "finder": "google/gemini-3.1-pro-preview",
+  "adversary": "google/gemini-3.1-pro-preview",
+  "referee": "google/gemini-3.1-pro-preview",
+  "generated_code": "#!/usr/bin/env python3\nimport os\nimport sys\nimport argparse\nimport json\nimport psycopg2\nfrom psycopg2.extras import RealDictCursor\n\ndef get_db_connection():\n    \"\"\"\n    Establishes a connection to the PostgreSQL database using environment variables.\n    Security Best Practice: Never hardcode database credentials in the source code.\n    \"\"\"\n    required_env_vars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD']\n    missing_vars = [var for var in required_env_vars if not os.environ.get(var)]\n    \n    if missing_vars:\n        sys.stderr.write(f\"Error: Missing required environment variables: {', '.join(missing_vars)}\\n\")\n        sys.stderr.write(\"Please set DB_HOST, DB_NAME, DB_USER, DB_PASSWORD (and optionally DB_PORT).\\n\")\n        sys.exit(1)\n\n    try:\n        conn = psycopg2.connect(\n            host=os.environ['DB_HOST'],\n            port=os.environ.get('DB_PORT', '5432'),\n            dbname=os.environ['DB_NAME'],\n            user=os.environ['DB_USER'],\n            password=os.environ['DB_PASSWORD']\n        )\n        return conn\n    except psycopg2.OperationalError as e:\n        sys.stderr.write(f\"Database connection failed: {e}\\n\")\n        sys.exit(1)\n\ndef execute_query(query: str):\n    \"\"\"\n    Executes the provided SQL query.\n    Note: Running arbitrary user-provided SQL is inherently dangerous (SQL Injection risk).\n    Ensure the database user (DB_USER) has the principle of least privilege applied, \n    restricting access only to necessary tables and operations.\n    \"\"\"\n    if not query or not query.strip():\n        sys.stderr.write(\"Error: The provided SQL query is empty.\\n\")\n        sys.exit(1)\n\n    conn = get_db_connection()\n    \n    try:\n        # Using RealDictCursor to return rows as dictionaries for easy JSON serialization\n        with conn:\n            with conn.cursor(cursor_factory=RealDictCursor) as cur:\n                cur.execute(query)\n                \n                # If the query returns rows (e.g., SELECT, RETURNING), fetch and print them\n                if cur.description is not None:\n                    results = cur.fetchall()\n                    print(json.dumps(results, indent=2, default=str))\n                else:\n                    # For INSERT/UPDATE/DELETE without RETURNING\n                    print(json.dumps({\"status\": \"success\", \"rows_affected\": cur.rowcount}))\n                    \n    except psycopg2.Error as e:\n        # Catching specific psycopg2 database errors (syntax errors, constraint violations, etc.)\n        sys.stderr.write(f\"Database error occurred:\\n{e}\\n\")\n        sys.exit(1)\n    except Exception as e:\n        # Catching any unexpected errors\n        sys.stderr.write(f\"An unexpected error occurred:\\n{e}\\n\")\n        sys.exit(1)\n    finally:\n        if conn:\n            conn.close()\n\ndef main():\n    parser = argparse.ArgumentParser(\n        description=\"Execute a user-provided SQL query against a PostgreSQL database.\"\n    )\n    parser.add_argument(\n        \"query\",\n        type=str,\n        help=\"The SQL query string to execute.\"\n    )\n    \n    args = parser.parse_args()\n    execute_query(args.query)\n\nif __name__ == \"__main__\":\n    main()",
+  "finder_issues": [
+    {
+      "id": 1,
+      "severity": "critical",
+      "type": "security",
+      "line": "52",
+      "description": "Arbitrary SQL Execution / SQL Injection by Design. The application accepts a raw SQL string from the command line arguments and passes it directly to `cur.execute()`. While the docstring acknowledges this, it is a catastrophic flaw if this script is accessible to untrusted users or wrapped by another application.",
+      "exploit": "An attacker can run any SQL command (e.g., `DROP TABLE users;`, `COPY (SELECT * FROM pg_shadow) TO '/tmp/creds';`) limited only by the database user's privileges.",
+      "fix": "Never accept arbitrary SQL queries from untrusted input. If this is intended to be an administrative tool, restrict execution permissions strictly. If the script is meant to perform specific operations, rewrite it to accept discrete arguments and use parameterized queries (e.g., `cur.execute('SELECT * FROM items WHERE id = %s', (item_id,))`)."
+    },
+    {
+      "id": 2,
+      "severity": "medium",
+      "type": "security",
+      "line": "23-29",
+      "description": "Missing SSL/TLS enforcement for database connection. The connection relies on environment defaults and does not explicitly require encryption.",
+      "exploit": "An attacker with network access between the machine running the script and the PostgreSQL server can perform a Man-in-the-Middle (MitM) attack to sniff credentials and data in transit.",
+      "fix": "Enforce encrypted connections by adding `sslmode='require'` (or ideally `sslmode='verify-full'` with `sslrootcert`) to the `psycopg2.connect()` parameters."
+    },
+    {
+      "id": 3,
+      "severity": "low",
+      "type": "security",
+      "line": "64-66",
+      "description": "Information Disclosure via Verbose Exception Handling. Catching raw `psycopg2.Error` and printing it directly to `sys.stderr` can leak internal database schemas, table names, and data structures.",
+      "exploit": "If the output of this script is piped to an application or web interface, an attacker can intentionally cause syntax errors or constraint violations to map out the database schema.",
+      "fix": "Log the detailed exception locally using a secure logger, and output a generic, sanitized error message to `sys.stderr`."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "performance",
+      "line": "56-57",
+      "description": "Memory Exhaustion / Denial of Service (DoS) via `fetchall()`. The script reads the entire result set into memory at once.",
+      "exploit": "An attacker running a query against a massive table (e.g., `SELECT * FROM massive_log_table`) will cause the Python process to consume all available memory, resulting in an Out-Of-Memory (OOM) crash and potential system instability.",
+      "fix": "Avoid using `fetchall()` for unbounded queries. Iterate over the cursor directly (`for row in cur:`) or use `fetchmany(size)` to stream and print the results in manageable chunks."
+    },
+    {
+      "id": 5,
+      "severity": "info",
+      "type": "logic",
+      "line": "42-44",
+      "description": "Insufficient input validation. The script checks if the query is empty or just whitespace, but does not enforce any bounds on query length.",
+      "exploit": "A user could pass an extremely large string (megabytes in size), which could cause excessive CPU/memory usage during parsing or network transmission.",
+      "fix": "Implement a reasonable maximum length check for the `query` string before attempting to execute it."
+    }
+  ],
+  "adversary_challenges": [
+    {
+      "issue_id": 1,
+      "verdict": "killed",
+      "reasoning": "This is a CLI administrative tool whose explicit, stated purpose is to execute arbitrary SQL provided by the user (similar to `psql`). Complaining about 'SQL Injection by Design' here is like complaining that a terminal emulator allows arbitrary command execution. The user must already have shell access to run this script, making the claimed attack vector theoretical in the intended context.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 2,
+      "verdict": "downgraded",
+      "reasoning": "While enforcing SSL/TLS is a good practice, hardcoding `sslmode='require'` would severely limit this generic tool's usefulness, especially for local development or internal containers where SSL isn't configured. Users can already enforce SSL by setting the standard `PGSSLMODE` environment variable which psycopg2 respects.",
+      "revised_severity": "info"
+    },
+    {
+      "issue_id": 3,
+      "verdict": "killed",
+      "reasoning": "This is a developer/admin CLI tool. The user actively needs to see the exact database errors (such as syntax errors or missing tables) to debug their SQL queries. Outputting a 'sanitized, generic error message' would make the tool completely useless for its intended purpose. There is no information disclosure boundary crossed when the user is the one issuing the queries.",
+      "revised_severity": "none"
+    },
+    {
+      "issue_id": 4,
+      "verdict": "downgraded",
+      "reasoning": "It is true that using `fetchall()` followed by `json.dumps()` on a massive result set will cause an Out-Of-Memory (OOM) error. However, this is a local CLI script, meaning the user is only 'DoS-ing' their own local process. It is a valid performance and architecture critique, but calling it a medium-severity security vulnerability is a massive stretch.",
+      "revised_severity": "low"
+    },
+    {
+      "issue_id": 5,
+      "verdict": "killed",
+      "reasoning": "The operating system inherently protects against this. Command-line arguments are subject to OS-level limits (e.g., `ARG_MAX` on POSIX systems, typically around 2MB). A user literally cannot pass an infinitely large string via `sys.argv`. Even if they could, a user exhausting their own local machine's memory via a massive argument is not a security issue.",
+      "revised_severity": "none"
+    }
+  ],
+  "surviving_issues": [
+    {
+      "id": 2,
+      "severity": "medium",
+      "type": "security",
+      "line": "23-29",
+      "description": "Missing SSL/TLS enforcement for database connection. The connection relies on environment defaults and does not explicitly require encryption.",
+      "exploit": "An attacker with network access between the machine running the script and the PostgreSQL server can perform a Man-in-the-Middle (MitM) attack to sniff credentials and data in transit.",
+      "fix": "Enforce encrypted connections by adding `sslmode='require'` (or ideally `sslmode='verify-full'` with `sslrootcert`) to the `psycopg2.connect()` parameters."
+    },
+    {
+      "id": 4,
+      "severity": "medium",
+      "type": "performance",
+      "line": "56-57",
+      "description": "Memory Exhaustion / Denial of Service (DoS) via `fetchall()`. The script reads the entire result set into memory at once.",
+      "exploit": "An attacker running a query against a massive table (e.g., `SELECT * FROM massive_log_table`) will cause the Python process to consume all available memory, resulting in an Out-Of-Memory (OOM) crash and potential system instability.",
+      "fix": "Avoid using `fetchall()` for unbounded queries. Iterate over the cursor directly (`for row in cur:`) or use `fetchmany(size)` to stream and print the results in manageable chunks."
+    }
+  ],
+  "referee_verdict": {
+    "final_issues": [
+      {
+        "issue_id": 1,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "The script is explicitly designed as a CLI tool to execute arbitrary SQL queries, similar to `psql`. Flagging its core, intended functionality as a critical SQL injection vulnerability is incorrect, as the user must already have shell access and database credentials to use it."
+      },
+      {
+        "issue_id": 2,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "Hardcoding `sslmode='require'` would break the tool for local development or internal networks where SSL is not configured. Users can and should enforce SSL using the standard `PGSSLMODE` environment variable, which psycopg2 natively respects."
+      },
+      {
+        "issue_id": 3,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "As a developer/admin CLI tool, displaying raw database errors is a necessary feature for debugging queries. There is no trust boundary being crossed here, as the user executing the script is the one providing the queries and credentials."
+      },
+      {
+        "issue_id": 4,
+        "final_verdict": "modified",
+        "final_severity": "low",
+        "explanation": "Using `fetchall()` on potentially massive result sets is a valid performance and architectural flaw that can lead to local memory exhaustion. However, since this is a local CLI script, the user is only impacting their own process, making it a low-severity performance issue rather than a medium-severity security vulnerability."
+      },
+      {
+        "issue_id": 5,
+        "final_verdict": "rejected",
+        "final_severity": "info",
+        "explanation": "Command-line arguments are already subject to OS-level length limits (e.g., `ARG_MAX`). Furthermore, a user consuming their own local memory by passing an absurdly large argument is not a security vulnerability."
+      }
+    ],
+    "summary": {
+      "total_found": 5,
+      "confirmed": 0,
+      "rejected": 4,
+      "modified": 1,
+      "finder_accuracy": 0.0,
+      "adversary_accuracy": 1.0
+    },
+    "overall_code_quality": "secure"
+  },
+  "programmatic_findings": [],
+  "programmatic_severity_score": 0,
+  "static_findings": [],
+  "static_severity_score": 0
+}
